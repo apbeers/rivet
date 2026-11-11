@@ -25,3 +25,7 @@ rustc-ice-*.txt
 
 # Local Python check caches
 __pycache__/
+
+# Native prototype verification artifacts
+/rivet-ui-smoke.log
+/rivet-ui-smoke.png

@@ -15,6 +15,11 @@ def check(metadata):
                 continue
             if package["name"] == "rivet-copilot" and dep["name"] in {"github-copilot-sdk", "tokio"}:
                 continue
+            if (package["name"] == "rivet-macos"
+                    and dep["name"] in {"objc2", "objc2-foundation", "objc2-app-kit"}
+                    and dep.get("target") == 'cfg(target_os = "macos")'
+                    and dep.get("kind") is None):
+                continue
             errors.append(f'{package["name"]}: forbidden direct dependency {dep["name"]}')
     return errors
 
@@ -26,4 +31,4 @@ if __name__ == "__main__":
     errors = check(metadata)
     if errors:
         raise SystemExit("\n".join(errors))
-    print("Dependency policy passed: SDK + Tokio confined to rivet-copilot.")
+    print("Dependency policy passed: SDK/Tokio adapter + macOS-only native bindings.")

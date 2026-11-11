@@ -7,8 +7,13 @@ first; a future Linux frontend remains possible. The main UI will not be a web a
 
 ## Current stage
 
-Stage 1 implements a small command-line Copilot SDK feasibility probe and repository checks.
-There is **no desktop UI, editor, orchestration, or application persistence yet**.
+Stage 2 adds a native **macOS UI prototype** with 20 persistent mock sessions,
+100,000-event virtualized conversations, cached settings, draft input, and background
+mock activity. Windows and Linux currently provide the Stage 1 CLI and portable benchmarks.
+There is no editor, browser, orchestration, or real Copilot integration in the UI yet.
+
+On macOS, run `cargo run -p rivet -- ui` (or run with no arguments). See
+[Stage 2 implementation and native verification](docs/stage-2.md).
 
 Requirements: Rust (pinned by `rust-toolchain.toml`), a native linker, and Git for repository
 features. Linux compilation of the SDK requires OpenSSL 3 development files and pkg-config.
@@ -43,9 +48,13 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-Only `rivet-copilot` directly depends on external crates: the official SDK and Tokio,
-which the SDK requires for execution. Other crates depend on first-party workspace code.
+External dependencies are confined to two boundaries: the official SDK and Tokio in
+`rivet-copilot`, and macOS-only AppKit/Foundation bindings in `rivet-macos`.
+Other crates depend on first-party workspace code.
 The lockfile pins transitive dependencies. CI checks macOS, Windows, and headless Linux;
 Linux CI does not imply Linux UI support.
+
+Run `cargo run -p rivet -- bench-ui` for portable algorithm measurements. macOS CI also
+runs the real native UI smoke test and uploads its screenshot and timing report.
 
 See [Stage 1 verification and remaining gates](docs/stage-1.md).

@@ -1,4 +1,4 @@
-name: Stage 1
+name: Rivet checks
 on:
   push:
   pull_request:
@@ -29,3 +29,18 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Offline doctor
         run: cargo run --locked -p rivet -- doctor
+
+      - name: Headless UI algorithms
+        run: cargo run --locked -p rivet -- bench-ui
+      - name: Native macOS UI smoke
+        if: runner.os == 'macOS'
+        run: python tools/run_macos_smoke.py
+      - name: Upload native UI evidence
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-ui-smoke
+          path: |
+            rivet-ui-smoke.log
+            rivet-ui-smoke.png
+          if-no-files-found: warn

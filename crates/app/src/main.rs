@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-const HELP: &str = "Rivet — Stage 1 SDK probe (no desktop UI yet)\n\nUsage:\n  rivet doctor\n  rivet auth\n  rivet chat PROMPT [--resume SESSION] [--cancel-after-ms N] [--timeout-secs N]\n  rivet resume SESSION\n\nRun from the intended workspace. All tool permission requests are denied.\nPrompts may incur Copilot usage. No credentials are printed or stored by Rivet.";
+const HELP: &str = "Rivet — Native agent workspace prototype\n\nUsage:\n  rivet ui [--smoke] (macOS only)\n  rivet bench-ui\n  rivet doctor\n  rivet auth\n  rivet chat PROMPT [--resume SESSION] [--cancel-after-ms N] [--timeout-secs N]\n  rivet resume SESSION\n\nRun from the intended workspace. All tool permission requests are denied.\nPrompts may incur Copilot usage. No credentials are printed or stored by Rivet.";
 
 fn parse(args: &[String]) -> Result<Option<ProbeOptions>, String> {
     let Some(command) = args.first().map(String::as_str) else {
@@ -57,6 +57,20 @@ fn number(value: &str) -> Result<u64, String> {
 }
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    #[cfg(target_os = "macos")]
+    if args.is_empty() {
+        return rivet_macos::run(false);
+    }
+    if args == ["bench-ui"] {
+        print!("{}", rivet_prototype::benchmark());
+        return Ok(());
+    }
+    if args == ["ui"] || args == ["ui", "--smoke"] {
+        #[cfg(target_os = "macos")]
+        return rivet_macos::run(args.len() == 2);
+        #[cfg(not(target_os = "macos"))]
+        return Err("The Stage 2 native UI is macOS-only. Windows UI follows later; CLI probes and bench-ui work here.".into());
+    }
     if args == ["doctor"] {
         println!(
             "Rivet Stage 1; host={}-{}; UI targets=macOS, Windows",

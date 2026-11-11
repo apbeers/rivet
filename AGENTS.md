@@ -2,11 +2,12 @@
 
 Read README.md and docs/stage-1.md before changes.
 
-- Build only the stage requested. Stage 1 has no desktop UI.
+- Build only the stage requested. Stage 2 is a mock native macOS UI, not real SDK integration.
 - macOS is the first UI target; Windows follows. Keep a future Linux frontend possible.
 - Use native platform UI and a shared Rust core. Custom Rust surfaces may serve demanding views.
-- External direct dependencies are confined to rivet-copilot: the official Copilot SDK and Tokio.
-  Native bindings are an approved architectural direction, but are not introduced in Stage 1.
+- External dependencies: SDK and Tokio only in rivet-copilot; objc2, objc2-foundation,
+  and objc2-app-kit only in rivet-macos under macOS conditional dependencies.
+- Read docs/stage-2.md for prototype limitations and verification gates.
 - Never expose SDK or Tokio types through the adapter's public boundary.
 - No credentials in logs, source, snapshots, or Git. Tool permissions fail closed.
 - Permission hooks are not an OS sandbox. Do not claim sandboxing.

@@ -88,3 +88,8 @@ This is SDK/headless verification, not Linux UI implementation.
 Stage 1's executable foundation is implemented. Its complete live feasibility gate
 remains open until valid Copilot model access and native-platform verification are
 available. Do not advance to Stage 2 based on an assumption that those gates passed.
+
+
+Stage 2 update: the user explicitly authorized the independent mock UI prototype while
+live SDK model access remains blocked. Stage 1's CI run 42958062175 passed on macOS,
+Windows, and Linux. This establishes builds/unit checks, not authenticated model access.
