@@ -274,6 +274,9 @@ impl Connection {
         self.done.load(Ordering::SeqCst)
     }
     pub fn send(&self, message: Value) -> Result<(), String> {
+        if self.stop.load(Ordering::Relaxed) {
+            return Err("Language server stopped".into());
+        }
         self.tx
             .try_send(message)
             .map_err(|_| "Language server queue full or disconnected".into())

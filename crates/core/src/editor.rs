@@ -4,6 +4,21 @@ use std::{ops::Range, sync::Arc};
 struct Piece {
     source: Arc<str>,
     range: Range<usize>,
+    units: usize,
+}
+impl Piece {
+    fn span(&self, range: Range<usize>) -> Self {
+        let units = if range == self.range {
+            self.units
+        } else {
+            self.source[range.clone()].encode_utf16().count()
+        };
+        Self {
+            source: self.source.clone(),
+            range,
+            units,
+        }
+    }
 }
 #[derive(Clone, Debug)]
 pub struct Snapshot {
@@ -37,6 +52,7 @@ impl Buffer {
         let bytes = text.len();
         let pieces = vec![Piece {
             range: 0..bytes,
+            units: text.encode_utf16().count(),
             source: text,
         }];
         let mut b = Self {
@@ -114,19 +130,27 @@ impl Buffer {
             .lines
             .partition_point(|(_, u)| *u <= index)
             .saturating_sub(1);
-        let (b, u) = self.lines[line];
-        let end = self.lines.get(line + 1).map_or(self.bytes, |(b, _)| *b);
-        let text = self.read(b..end)?;
-        let (mut pos, mut count) = (b, u);
-        for c in text.chars() {
-            if count == index {
-                return Ok(pos);
+        let (mut pos, mut count) = self.lines[line];
+        let mut offset = 0;
+        for piece in &self.pieces {
+            let end = offset + piece.range.len();
+            if pos == offset && count + piece.units <= index {
+                count += piece.units;
+                pos = end;
+            } else if end > pos {
+                let skip = pos.saturating_sub(offset);
+                for c in piece.source[piece.range.start + skip..piece.range.end].chars() {
+                    if count == index {
+                        return Ok(pos);
+                    }
+                    count += c.len_utf16();
+                    pos += c.len_utf8();
+                    if count > index {
+                        return Err("UTF-16 position splits a surrogate pair".into());
+                    }
+                }
             }
-            count += c.len_utf16();
-            pos += c.len_utf8();
-            if count > index {
-                return Err("UTF-16 position splits a surrogate pair".into());
-            }
+            offset = end;
         }
         if count == index {
             Ok(pos)
@@ -142,8 +166,28 @@ impl Buffer {
             .lines
             .partition_point(|(b, _)| *b <= index)
             .saturating_sub(1);
-        let (b, u) = self.lines[line];
-        Ok(u + self.read(b..index)?.encode_utf16().count())
+        let (start, mut units) = self.lines[line];
+        let mut offset = 0;
+        for piece in &self.pieces {
+            let len = piece.range.len();
+            let begin = start.saturating_sub(offset).min(len);
+            let end = index.saturating_sub(offset).min(len);
+            if begin == 0 && end == len {
+                units += piece.units;
+            } else if begin < end {
+                units += piece
+                    .source
+                    .get(piece.range.start + begin..piece.range.start + end)
+                    .ok_or("range splits UTF-8")?
+                    .encode_utf16()
+                    .count();
+            }
+            offset += len;
+            if offset >= index {
+                break;
+            }
+        }
+        Ok(units)
     }
     pub fn replace(&mut self, range: Range<usize>, text: &str) -> Result<(), String> {
         if text.len() > 16 * 1024 * 1024
@@ -158,8 +202,9 @@ impl Buffer {
         if range.start > range.end || range.end > self.bytes {
             return Err("invalid edit range".into());
         }
-        self.byte_to_utf16(range.start)?;
-        self.byte_to_utf16(range.end)?;
+        let start_u = self.byte_to_utf16(range.start)?;
+        let end_u = self.byte_to_utf16(range.end)?;
+        let text_units = text.encode_utf16().count();
         if self.pieces.len() > 65_536 {
             return Err("piece budget reached; save and reopen".into());
         }
@@ -176,10 +221,7 @@ impl Buffer {
             if offset < range.start {
                 let keep = (range.start - offset).min(p.range.len());
                 if keep > 0 {
-                    pieces.push(Piece {
-                        source: p.source.clone(),
-                        range: p.range.start..p.range.start + keep,
-                    });
+                    pieces.push(p.span(p.range.start..p.range.start + keep));
                 }
             }
             if !inserted && end >= range.start {
@@ -187,16 +229,14 @@ impl Buffer {
                     pieces.push(Piece {
                         source: Arc::from(text),
                         range: 0..text.len(),
+                        units: text_units,
                     });
                 }
                 inserted = true;
             }
             if end > range.end {
                 let skip = range.end.saturating_sub(offset).min(p.range.len());
-                pieces.push(Piece {
-                    source: p.source.clone(),
-                    range: p.range.start + skip..p.range.end,
-                });
+                pieces.push(p.span(p.range.start + skip..p.range.end));
             }
             offset = end;
         }
@@ -204,11 +244,11 @@ impl Buffer {
             pieces.push(Piece {
                 source: Arc::from(text),
                 range: 0..text.len(),
+                units: text_units,
             });
         }
         // Maintain the line index by editing only affected line starts and shifting the tail.
-        let removed_u = self.byte_to_utf16(range.end)? - self.byte_to_utf16(range.start)?;
-        let start_u = self.byte_to_utf16(range.start)?;
+        let removed_u = end_u - start_u;
         let (mut b, mut u) = (range.start, start_u);
         let mut added = Vec::new();
         for c in text.chars() {
@@ -218,6 +258,7 @@ impl Buffer {
                 added.push((b, u));
             }
         }
+        let inserted_u = u - start_u;
         let mut lines = Vec::with_capacity(self.lines.len() + added.len());
         for &(b, u) in &self.lines {
             if b <= range.start {
@@ -227,10 +268,7 @@ impl Buffer {
         lines.extend(added);
         for &(b, u) in &self.lines {
             if b > range.end {
-                lines.push((
-                    b - range.len() + text.len(),
-                    u - removed_u + text.encode_utf16().count(),
-                ));
+                lines.push((b - range.len() + text.len(), u - removed_u + inserted_u));
             }
         }
         self.bytes = self.bytes - range.len() + text.len();
@@ -370,6 +408,42 @@ pub fn tokens(text: &str) -> Vec<(Range<usize>, TokenKind)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mixed_unicode_replacements_preserve_native_positions() {
+        let mut reference = String::from("a🦀\n日本語\n");
+        let mut buffer = Buffer::new(Arc::from(reference.as_str()));
+        let mut seed = 123u64;
+        for n in 0..300 {
+            let mut random = || {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                seed as usize
+            };
+            let mut boundaries: Vec<_> = reference.char_indices().map(|(i, _)| i).collect();
+            boundaries.push(reference.len());
+            let a = boundaries[random() % boundaries.len()];
+            let b = boundaries[random() % boundaries.len()];
+            let range = a.min(b)..a.max(b);
+            let text = ["🦀", "日本\n", "x", "", "\n"][random() % 5];
+            buffer.replace(range.clone(), text).unwrap();
+            reference.replace_range(range, text);
+            assert_eq!(buffer.snapshot().text(), reference);
+            let mut units = 0;
+            for (byte, ch) in reference.char_indices() {
+                assert_eq!(buffer.byte_to_utf16(byte).unwrap(), units);
+                assert_eq!(buffer.utf16_to_byte(units).unwrap(), byte);
+                if ch.len_utf16() == 2 {
+                    assert!(buffer.utf16_to_byte(units + 1).is_err());
+                }
+                units += ch.len_utf16();
+            }
+            assert_eq!(buffer.utf16_to_byte(units).unwrap(), reference.len());
+            if n % 20 == 0 {
+                assert!(buffer.undo());
+                assert!(buffer.redo());
+                assert_eq!(buffer.snapshot().text(), reference);
+            }
+        }
+    }
     #[test]
     fn unicode_edits_undo_redo_and_search_cross_pieces() {
         let mut b = Buffer::new(Arc::from("a🦀\nbeta\n"));

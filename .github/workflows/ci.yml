@@ -15,6 +15,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-rust-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
       - name: Install pinned toolchain
         run: rustup show
       - name: Format
@@ -32,6 +39,8 @@ jobs:
 
       - name: Headless UI algorithms
         run: cargo run --locked -p rivet -- bench-ui
+      - name: Shared editor CPU benchmark
+        run: cargo run --locked --release -p rivet-core --example bench_editor
       - name: Native macOS UI smoke
         if: runner.os == 'macOS'
         run: python tools/run_macos_smoke.py
@@ -56,6 +65,7 @@ jobs:
           path: |
             rivet-live-smoke.log
             rivet-live-sample.txt
+            rivet-live-*.png
           if-no-files-found: warn
       - name: Assemble development app bundle
         if: runner.os == 'macOS'

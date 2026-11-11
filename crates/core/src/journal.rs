@@ -157,7 +157,7 @@ impl Journal {
         snapshot.file.sync_all()?;
         fs::rename(&temporary, &self.path)?;
         #[cfg(unix)]
-        if let Some(parent) = self.path.parent() {
+        if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
             File::open(parent)?.sync_all()?;
         }
         self.file = snapshot.file;
@@ -166,7 +166,14 @@ impl Journal {
     }
     /// Success means data reached durable storage. Caller must use a worker.
     pub fn append(&mut self, kind: u16, payload: &[u8]) -> io::Result<()> {
-        if payload.len() > LIMIT {
+        if payload.len() > LIMIT
+            || self
+                .file
+                .metadata()?
+                .len()
+                .saturating_add(payload.len() as u64 + 22)
+                > 64 * 1024 * 1024
+        {
             return Err(invalid("journal payload exceeds budget"));
         }
         let sequence = self

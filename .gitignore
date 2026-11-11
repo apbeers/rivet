@@ -33,3 +33,5 @@ __pycache__/
 /dist/
 /rivet-live-smoke.log
 /rivet-live-sample.txt
+
+/rivet-live-*.png

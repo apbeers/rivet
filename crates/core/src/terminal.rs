@@ -63,8 +63,8 @@ impl Screen {
         let n = first.max(1);
         match command {
             b'A' => self.y = self.y.saturating_sub(n),
-            b'B' => self.y = (self.y + n).min(self.rows - 1),
-            b'C' => self.x = (self.x + n).min(self.columns - 1),
+            b'B' => self.y = self.y.saturating_add(n).min(self.rows - 1),
+            b'C' => self.x = self.x.saturating_add(n).min(self.columns - 1),
             b'D' => self.x = self.x.saturating_sub(n),
             b'G' => self.x = n.saturating_sub(1).min(self.columns - 1),
             b'H' | b'f' => {
@@ -172,6 +172,12 @@ impl Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hostile_cursor_parameters_are_bounded() {
+        let mut screen = Screen::new(80, 24);
+        screen.feed(format!("\x1b[{}B\x1b[{}CX", usize::MAX, usize::MAX).as_bytes());
+        assert!(screen.render().contains('X'));
+    }
     #[test]
     fn handles_chunked_utf8_cursor_and_erase() {
         let mut s = Screen::new(10, 3);

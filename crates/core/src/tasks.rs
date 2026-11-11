@@ -157,6 +157,7 @@ impl Task {
                 .get("retries")
                 .and_then(Value::integer)
                 .and_then(|n| u8::try_from(n).ok())
+                .filter(|&n| n <= 2)
                 .ok_or("Invalid retry budget")?,
         })
     }
@@ -528,6 +529,50 @@ mod tests {
                 .unwrap()
                 .contains("agent implementation")
         );
+        // A change on the integration branch can invalidate otherwise passing work.
+        let work2 = dir.join("second-writer");
+        let base2 = prepare(&repo, &work2, &cancel).unwrap();
+        std::fs::write(work2.join("second.txt"), "second implementation").unwrap();
+        git(&work2, &["add", "second.txt"], &cancel).unwrap();
+        git(&work2, &["commit", "-m", "second implementation"], &cancel).unwrap();
+        let commit2 = git(&work2, &["rev-parse", "HEAD"], &cancel).unwrap();
+        let second = coordinator
+            .add(
+                repo.clone(),
+                "Second task".into(),
+                vec![id],
+                vec![
+                    py.into(),
+                    "-c".into(),
+                    "import pathlib;assert not pathlib.Path('integration-only.txt').exists()"
+                        .into(),
+                ],
+            )
+            .unwrap();
+        coordinator.start(second, work2.clone(), base2).unwrap();
+        coordinator.agent_finished(second).unwrap();
+        validate(&coordinator.tasks[&second], &work2, &cancel).unwrap();
+        coordinator.validated(second).unwrap();
+        std::fs::write(
+            repo.join("integration-only.txt"),
+            "incompatible main change",
+        )
+        .unwrap();
+        git(&repo, &["add", "integration-only.txt"], &cancel).unwrap();
+        git(&repo, &["commit", "-m", "main changed"], &cancel).unwrap();
+        let failure = integrate(&coordinator.tasks[&second], &commit2, &cancel).unwrap_err();
+        coordinator.fail(second, failure).unwrap();
+        assert_eq!(coordinator.tasks[&second].state, State::Failed);
+        assert!(
+            repo.join("second.txt").exists(),
+            "Failed combined validation must retain integrated changes for inspection"
+        );
+        git(
+            &repo,
+            &["worktree", "remove", work2.to_str().unwrap()],
+            &cancel,
+        )
+        .unwrap();
         drop(coordinator);
         git(
             &repo,

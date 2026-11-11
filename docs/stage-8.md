@@ -39,3 +39,15 @@ complete. Remaining release gates include:
 
 Run local checks before hosted pipelines. Keep production functionality distinct from
 fixtures, and never describe outstanding gates as passed.
+
+## Shared editor measurements (Linux x86_64 development container)
+
+`cargo run --release -p rivet-core --example bench_editor` records buffer CPU timings,
+not native layout, input-to-display latency, memory budgets, or file I/O. A 10 MB-scale
+buffer with 403,299 lines took about 13 ms to construct. Over 100 samples, inserting
+at its first line measured p50 776 us, p95 942 us, p99 2,890 us. Appending to a 10 MiB
+single-line buffer measured p50 1 us, p95 2 us, p99 3 us after caching UTF-16 lengths
+per piece (previous p50 15,594 us). These are one container run, not reference-hardware
+acceptance. CI records the same benchmark on its three OS runners. Native live workspace
+shutdown also reports bounded p50/p95/p99 CPU samples for session selection, event
+application, and polling; none of these claims presented-frame latency.

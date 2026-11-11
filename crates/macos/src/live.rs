@@ -6,7 +6,7 @@ use objc2::{
 };
 use objc2_app_kit::*;
 use objc2_foundation::{
-    NSAttributedString, NSNotification, NSObjectProtocol, NSPoint, NSRect, NSRunLoop,
+    NSAttributedString, NSDictionary, NSNotification, NSObjectProtocol, NSPoint, NSRect, NSRunLoop,
     NSRunLoopCommonModes, NSSize, NSString, NSTimer,
 };
 use rivet_core::AgentBackend;
@@ -68,9 +68,13 @@ struct State {
     views: RefCell<BTreeMap<u64, Retained<NSTextView>>>,
     permissions: RefCell<VecDeque<(u64, u64, String)>>,
     timer: OnceCell<Retained<NSTimer>>,
+    shutdown_timer: OnceCell<Retained<NSTimer>>,
     smoke_tick: Cell<Option<u16>>,
     closing: Cell<bool>,
     host_stopped: Cell<bool>,
+    switching: RefCell<rivet_prototype::Samples>,
+    polling: RefCell<rivet_prototype::Samples>,
+    event_apply: RefCell<rivet_prototype::Samples>,
     cached_paths: RefCell<Vec<PathBuf>>,
     mode: Cell<u8>,
     tools: OnceCell<Retained<super::tools::Tools>>,
@@ -137,9 +141,11 @@ define_class!(
             self.ivars().discard_pending.borrow_mut().take();self.controls().revert.setTitle(&NSString::from_str("Reject unsaved"));editor.revert();self.status("Unsaved edits rejected; disk unchanged");
         }
         #[unsafe(method(tick:))] fn tick(&self,_timer:&NSTimer){
+            let tick_started=std::time::Instant::now();
             for _ in 0..64 {
                 let event=self.ivars().host.borrow_mut().try_event();let Some(event)=event else {break;};
                 let key=match &event{AgentEvent::Ready{key,..}|AgentEvent::Delta{key,..}|AgentEvent::Activity{key,..}|AgentEvent::Finished{key}|AgentEvent::Error{key,..}=>Some(*key),_=>None};
+                let event_started=std::time::Instant::now();
                 let old=key.and_then(|k|self.ivars().workspace.borrow().sessions.get(&k).map(|s|(s.transcript.len(),s.transcript_epoch))).unwrap_or((0,0));
                 self.ivars().workspace.borrow_mut().apply(&event);
                 if let Some(key)=key{self.update_view(key,old);}
@@ -147,31 +153,35 @@ define_class!(
                     AgentEvent::Stopped=>{self.ivars().host_stopped.set(true);self.status("Copilot runtime stopped");},
                     AgentEvent::Status(text)=>self.status(&text),
                     AgentEvent::Error{message,..}=>self.status(&message),
-                    AgentEvent::Ready{key,..}=>{self.status("Session connected; model/instructions are fixed for this connection");if key==self.ivars().workspace.borrow().active {self.controls().model.setEnabled(false);self.controls().instructions.setEnabled(false);}},
+                    AgentEvent::Ready{key,..}=>{self.status("Session connected; model/instructions are fixed for this connection");if key==self.ivars().workspace.borrow().active {self.controls().model.setEnabled(false);self.controls().instructions.setEditable(false);}},
                     AgentEvent::Models(models)=>{let c=self.controls();let selected=c.model.titleOfSelectedItem();c.model.removeAllItems();c.model.addItemWithTitle(&NSString::from_str("SDK default"));for model in models{c.model.addItemWithTitle(&NSString::from_str(&model));}if let Some(title)=selected{c.model.selectItemWithTitle(&title);}},
                     AgentEvent::SavedSession{id}=>{let c=self.controls();if c.saved.indexOfItemWithTitle(&NSString::from_str(&id))<0{c.saved.addItemWithTitle(&NSString::from_str(&id));}},
                     AgentEvent::Permission{key,request,description}=>{self.ivars().permissions.borrow_mut().push_back((key,request,description));self.show_permission();},
                     AgentEvent::Finished{..}=>self.status("Turn finished"),_=>{},
                 }
+                self.ivars().event_apply.borrow_mut().record(event_started.elapsed());
             }
             self.poll_files();
             if let Some(tools)=self.ivars().tools.get(){tools.tick();if let Some((path,line,character))=tools.try_navigation(){self.file_job(FileCommand::ReadAt{root:self.root_path(),path,line,character});}}
 
-            if self.ivars().closing.get() && self.ivars().host_stopped.get() && self.ivars().tools.get().is_none_or(|tools| tools.is_finished()) && self.ivars().tasks.get().is_none_or(|tasks|tasks.is_finished()) {
-                if let Some(t)=self.ivars().timer.get(){t.invalidate();}
-                NSApplication::sharedApplication(self.mtm()).replyToApplicationShouldTerminate(true);
-            }
             if let Some(tasks)=self.ivars().tasks.get(){tasks.tick();}
             self.smoke_step();
+            self.ivars().polling.borrow_mut().record(tick_started.elapsed());
         }
+        #[unsafe(method(shutdownTick:))] fn shutdown_tick(&self,_timer:&NSTimer){self.poll_shutdown();}
     }
     unsafe impl NSObjectProtocol for Workspace{}
     unsafe impl NSApplicationDelegate for Workspace {
         #[unsafe(method(applicationShouldTerminate:))]
         fn should_terminate(&self,_app:&NSApplication)->NSApplicationTerminateReply {
             if self.ivars().documents.borrow().any_dirty(){self.status("Save or explicitly reject unsaved documents before quitting");return NSApplicationTerminateReply::TerminateCancel;}
-            self.ivars().closing.set(true); self.ivars().host.borrow().shutdown(); if let Some(tools)=self.ivars().tools.get(){tools.shutdown();}
-            if let Some(tasks)=self.ivars().tasks.get(){tasks.shutdown();} NSApplicationTerminateReply::TerminateLater
+            if !self.ivars().closing.replace(true) {
+                self.ivars().host.borrow().shutdown();
+                if let Some(tools)=self.ivars().tools.get(){tools.shutdown();}
+                if let Some(tasks)=self.ivars().tasks.get(){tasks.shutdown();}
+                self.start_shutdown_timer();
+            }
+            NSApplicationTerminateReply::TerminateLater
         }
     }
     unsafe impl NSWindowDelegate for Workspace{
@@ -220,6 +230,7 @@ impl Workspace {
                 dispatch(&c.sessions);
             }
             11 => {
+                self.smoke_snapshot("rivet-live-agents.png");
                 assert_eq!(c.draft.stringValue().to_string(), "Retained draft 🦀");
                 assert!(
                     self.ivars().workspace.borrow().sessions[&1]
@@ -313,6 +324,83 @@ impl Workspace {
                 }
             }
             _ => {}
+        }
+    }
+    fn start_shutdown_timer(&self) {
+        // A timer cannot re-enter its own callback. terminate: may run a nested loop
+        // when called from the main polling timer, so use an independent timer here.
+        let timer = unsafe {
+            NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(
+                1.0 / 60.0,
+                self,
+                sel!(shutdownTick:),
+                None,
+                true,
+            )
+        };
+        unsafe {
+            NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+            NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSModalPanelRunLoopMode);
+        }
+        let _ = self.ivars().shutdown_timer.set(timer);
+    }
+    fn poll_shutdown(&self) {
+        for _ in 0..64 {
+            match self.ivars().host.borrow_mut().try_event() {
+                Some(AgentEvent::Stopped) => self.ivars().host_stopped.set(true),
+                Some(_) => {}
+                None => break,
+            }
+        }
+        if let Some(tools) = self.ivars().tools.get() {
+            tools.tick();
+        }
+        if let Some(tasks) = self.ivars().tasks.get() {
+            tasks.tick();
+        }
+        if self.ivars().host_stopped.get()
+            && self.ivars().tools.get().is_none_or(|t| t.is_finished())
+            && self.ivars().tasks.get().is_none_or(|t| t.is_finished())
+        {
+            if let Some(timer) = self.ivars().timer.get() {
+                timer.invalidate();
+            }
+            if let Some(timer) = self.ivars().shutdown_timer.get() {
+                timer.invalidate();
+            }
+            self.report_metrics();
+            NSApplication::sharedApplication(self.mtm()).replyToApplicationShouldTerminate(true);
+        }
+    }
+    fn smoke_snapshot(&self, path: &str) {
+        let image = self
+            .bitmapImageRepForCachingDisplayInRect(self.bounds())
+            .expect("native smoke bitmap");
+        self.cacheDisplayInRect_toBitmapImageRep(self.bounds(), &image);
+        let data = unsafe {
+            image.representationUsingType_properties(
+                NSBitmapImageFileType::PNG,
+                &NSDictionary::new(),
+            )
+        }
+        .expect("native smoke PNG");
+        assert!(data.writeToFile_atomically(&NSString::from_str(path), true));
+    }
+    fn report_metrics(&self) {
+        eprintln!(
+            "Live workspace timing: nanoseconds; CPU callbacks, not presented frames or network latency"
+        );
+        for (name, samples) in [
+            ("live_session_selection_cpu", &self.ivars().switching),
+            ("live_poll_cpu", &self.ivars().polling),
+            ("live_agent_event_apply_cpu", &self.ivars().event_apply),
+        ] {
+            if let Some(p) = samples.borrow().percentiles() {
+                eprintln!(
+                    "{name}: n={} p50={} p95={} p99={}",
+                    p.count, p.p50, p.p95, p.p99
+                );
+            }
         }
     }
     fn root_path(&self) -> PathBuf {
@@ -528,8 +616,12 @@ impl Workspace {
             views: RefCell::new(BTreeMap::new()),
             permissions: RefCell::new(VecDeque::new()),
             timer: OnceCell::new(),
+            shutdown_timer: OnceCell::new(),
             closing: Cell::new(false),
             host_stopped: Cell::new(false),
+            switching: RefCell::new(Default::default()),
+            polling: RefCell::new(Default::default()),
+            event_apply: RefCell::new(Default::default()),
             cached_paths: RefCell::new(Vec::new()),
             mode: Cell::new(0),
             tools: OnceCell::new(),
@@ -860,6 +952,7 @@ impl Workspace {
         }
     }
     fn show_active(&self) {
+        let started = std::time::Instant::now();
         let c = self.controls();
         let state = self.ivars().workspace.borrow();
         let key = state.active;
@@ -881,6 +974,10 @@ impl Workspace {
         let view = views.entry(key).or_insert_with(|| self.text_view());
         c.scroll.setDocumentView(Some(view));
         view.scrollPoint(NSPoint::new(0.0, s.scroll_y));
+        self.ivars()
+            .switching
+            .borrow_mut()
+            .record(started.elapsed());
     }
     fn update_view(&self, key: u64, old: (usize, u64)) {
         let state = self.ivars().workspace.borrow();

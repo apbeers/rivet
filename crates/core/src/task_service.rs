@@ -200,6 +200,30 @@ fn serve(
             let Some(event) = sdk.try_event() else {
                 break;
             };
+            // Reject late events/permissions from cancelled or superseded attempts.
+            let key = match &event {
+                AgentEvent::Ready { key, .. }
+                | AgentEvent::Finished { key }
+                | AgentEvent::Error { key, .. }
+                | AgentEvent::Delta { key, .. }
+                | AgentEvent::Activity { key, .. }
+                | AgentEvent::Permission { key, .. } => Some(*key),
+                _ => None,
+            };
+            if let Some(key) = key
+                && !coordinator
+                    .tasks
+                    .get(&(key / 3))
+                    .is_some_and(|task| session_key(task) == key && task.state == State::Running)
+            {
+                if let AgentEvent::Permission { request, .. } = event {
+                    let _ = sdk.submit(AgentCommand::Decide {
+                        request,
+                        allow: false,
+                    });
+                }
+                continue;
+            }
             let changed = matches!(
                 &event,
                 AgentEvent::Ready { .. } | AgentEvent::Finished { .. } | AgentEvent::Error { .. }
@@ -275,13 +299,17 @@ fn serve(
                         events,
                         Event::Permission {
                             request,
-                            description: format!("Task #{key}\n{description}"),
+                            description: format!("Task #{}\n{description}", key / 3),
                         },
                         stop,
                     )?;
                 }
                 AgentEvent::Delta { key, text } => {
-                    emit(events, Event::Log(format!("Task #{key}: {text}")), stop)?;
+                    emit(
+                        events,
+                        Event::Log(format!("Task #{}: {text}", key / 3)),
+                        stop,
+                    )?;
                 }
                 AgentEvent::Status(text) => {
                     emit(events, Event::Log(text), stop)?;

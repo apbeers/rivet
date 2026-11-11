@@ -63,6 +63,9 @@ impl EditorView {
                 container.setWidthTracksTextView(true);
             }
         }
+        if let Some(layout) = unsafe { this.layoutManager() } {
+            layout.setAllowsNonContiguousLayout(true);
+        }
         this.setString(&NSString::from_str(&source));
         this.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(13.0, 0.0)));
         this.setDelegate(Some(ProtocolObject::from_ref(&*this)));
