@@ -12,7 +12,9 @@ New-Item -ItemType Directory -Path $Staging | Out-Null
 try {
     $New = Join-Path $Staging 'New'
     New-Item -ItemType Directory -Path $New | Out-Null
-    foreach ($Name in $Required) { Copy-Item (Join-Path $Source $Name) (Join-Path $New $Name) }
+    # Preserve user-added files when replacing the known application payload.
+    if (Test-Path $Destination) { Get-ChildItem -LiteralPath $Destination -Force | Copy-Item -Destination $New -Recurse -Force }
+    foreach ($Name in $Required) { Copy-Item (Join-Path $Source $Name) (Join-Path $New $Name) -Force }
     if (Test-Path $Destination) { Move-Item $Destination (Join-Path $Staging 'Previous') }
     Move-Item $New $Destination
     Write-Output "Installed $Destination (current user; no elevation requested)."

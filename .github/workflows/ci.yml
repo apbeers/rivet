@@ -109,12 +109,17 @@ jobs:
         shell: pwsh
         run: |
           ./tools/install_windows.ps1 -Source dist/windows
+          $extra = Join-Path $env:LOCALAPPDATA 'Programs/Rivet/user-note.txt'
+          Set-Content -LiteralPath $extra -Value 'preserve across update and uninstall'
           ./tools/install_windows.ps1 -Source dist/windows
+          if ((Get-Content -LiteralPath $extra) -ne 'preserve across update and uninstall') { throw 'Update removed user file' }
           $env:RIVET_WINDOWS_BINARY = Join-Path $env:LOCALAPPDATA 'Programs/Rivet/Rivet.exe'
           python tools/run_windows_smoke.py
           if ($LASTEXITCODE -ne 0) { throw 'Installed app smoke failed' }
           ./tools/uninstall_windows.ps1
           if (Test-Path $env:RIVET_WINDOWS_BINARY) { throw 'Uninstall left executable behind' }
+          if (-not (Test-Path $extra)) { throw 'Uninstall removed user file' }
+          Remove-Item -LiteralPath $extra
       - name: Upload Windows development package
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4

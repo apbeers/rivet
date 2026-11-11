@@ -11,7 +11,16 @@ pub struct Journal {
     file: File,
     sequence: u64,
     path: PathBuf,
-    _lock: Option<File>,
+    _lock: Option<JournalLock>,
+}
+struct JournalLock(File);
+impl Drop for JournalLock {
+    fn drop(&mut self) {
+        // Explicitly release the shared open-file-description lock. On Unix a
+        // concurrent fork may temporarily retain this descriptor until exec;
+        // merely closing our copy can then delay an otherwise immediate reopen.
+        let _ = self.0.unlock();
+    }
 }
 fn checksum(bytes: &[u8]) -> u32 {
     let mut crc = !0u32;
@@ -51,6 +60,7 @@ impl Journal {
         let lock = options.open(Path::new(&lock_path))?;
         lock.try_lock()
             .map_err(|e| io::Error::other(format!("Journal lock unavailable: {e}")))?;
+        let lock = JournalLock(lock);
         let mut file = options.open(path)?;
         #[cfg(unix)]
         {
@@ -209,6 +219,20 @@ pub fn user_data_dir() -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dropping_journal_releases_lock_even_with_a_duplicate_descriptor() {
+        let dir = std::env::temp_dir().join(format!("rivet-lock-drop-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("journal");
+        let (journal, _) = Journal::open(&path).unwrap();
+        let duplicate = journal._lock.as_ref().unwrap().0.try_clone().unwrap();
+        assert!(Journal::open(&path).is_err());
+        drop(journal);
+        let (reopened, _) = Journal::open(&path).unwrap();
+        drop(reopened);
+        drop(duplicate);
+        fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn checkpoint_preserves_exclusion_and_replay() {
         let dir = std::env::temp_dir().join(format!("rivet-checkpoint-{}", std::process::id()));

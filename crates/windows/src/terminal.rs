@@ -182,14 +182,32 @@ fn serve(
         }
         let mut startup: StartupInfoEx = std::mem::zeroed();
         startup.info.cb = std::mem::size_of::<StartupInfoEx>() as u32;
+        // Force ConPTY connections instead of duplicating a launcher's redirected
+        // stdio. Keep all three explicit handles null; ConPTY initializes them.
+        // https://github.com/microsoft/terminal/discussions/15814
+        startup.info.flags = 0x100; // STARTF_USESTDHANDLES
         startup.attributes = list;
         let mut pi: ProcessInfo = std::mem::zeroed();
         let shell =
             std::env::var("COMSPEC").unwrap_or_else(|_| "C:\\Windows\\System32\\cmd.exe".into());
         let mut command = wide(&format!("\"{}\" /D /Q", shell));
-        let cwd: Vec<u16> = std::os::windows::ffi::OsStrExt::encode_wide(root.as_os_str())
-            .chain(Some(0))
-            .collect();
+        let mut cwd: Vec<u16> =
+            std::os::windows::ffi::OsStrExt::encode_wide(root.as_os_str()).collect();
+        // cmd.exe treats verbatim disk paths as UNC and silently changes directory.
+        // Preserve UTF-16 filenames while removing only a verified disk prefix.
+        if cwd.starts_with(&wide("\\\\?\\")[..4])
+            && cwd.len() > 6
+            && cwd[4] < 128
+            && (cwd[4] as u8).is_ascii_alphabetic()
+            && cwd[5] == b':' as u16
+            && cwd[6] == b'\\' as u16
+        {
+            cwd.drain(..4);
+        }
+        if cwd.starts_with(&[b'\\' as u16, b'\\' as u16]) {
+            return Err("The initial cmd.exe terminal requires a local disk workspace".into());
+        }
+        cwd.push(0);
         let job = CreateJobObjectW(ptr::null(), ptr::null());
         if job.is_null() {
             return Err(error());
