@@ -38,6 +38,7 @@ struct Document {
     revision: u64,
     saved: u64,
     highlight: bool,
+    read_only: bool,
 }
 impl Document {
     fn dirty(&self) -> bool {
@@ -138,6 +139,7 @@ struct App {
     backend_stopped: Cell<bool>,
     fatal: Cell<bool>,
     high: Cell<Option<u16>>,
+    terminal_high: Cell<Option<u16>>,
     font: Cell<Handle>,
     mono: Cell<Handle>,
     switching: RefCell<rivet_prototype::Samples>,
@@ -168,6 +170,7 @@ impl App {
             backend_stopped: Cell::new(false),
             fatal: Cell::new(false),
             high: Cell::new(None),
+            terminal_high: Cell::new(None),
             font: Cell::new(ptr::null_mut()),
             mono: Cell::new(ptr::null_mut()),
             switching: RefCell::new(Default::default()),
@@ -1121,16 +1124,11 @@ impl App {
             if s.pending_saves.contains(&d.path) {
                 return Err("Save already pending for this document".into());
             }
-            let snapshot = if d.base.contains("\r\n") {
-                Buffer::new(Arc::from(d.buffer.snapshot().text().replace('\n', "\r\n"))).snapshot()
-            } else {
-                d.buffer.snapshot()
-            };
             FileCommand::Save {
                 root: self.root(),
                 path: d.path.clone(),
                 expected: d.base.clone(),
-                snapshot,
+                snapshot: d.buffer.snapshot(),
                 revision: d.revision,
             }
         };
@@ -1237,7 +1235,7 @@ impl App {
                 .iter_mut()
                 .find(|d| d.view == view)
                 .ok_or("Editor document unavailable")?;
-            if mixed_endings(&d.base) {
+            if d.read_only {
                 return Err("Mixed or legacy CR line endings are read-only in this version".into());
             }
             if range.0 == range.1 && delete < 0 && range.0 > 0 {
@@ -1276,7 +1274,7 @@ impl App {
             if let Some(d) = s.docs.iter_mut().find(|d| d.view == view) {
                 let previous = d.buffer.snapshot().text();
                 if previous != content {
-                    if content.len() > 256 * 1024 || mixed_endings(&d.base) {
+                    if content.len() > 256 * 1024 || d.read_only {
                         error=Some((previous,"This native edit path is limited to 256 KiB; use ordinary typing/paste or an external editor".to_string()));
                     } else {
                         let mut a = previous
@@ -1412,6 +1410,7 @@ impl App {
             revision: 0,
             saved: 0,
             highlight: true,
+            read_only,
         });
         self.guarded(|| set_text(view, &content));
         send(view, 0xcf, usize::from(read_only), 0);
@@ -2478,6 +2477,10 @@ unsafe extern "system" fn editor_proc(
         if app.suppress.get() > 0 {
             return DefSubclassProc(view, message, w, l);
         }
+        if message == 0x87 {
+            // Code editing owns Tab, Return and arrow keys, including dialog routing.
+            return DefSubclassProc(view, message, w, l) | 0x87;
+        }
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
             || -> Option<Result<(), String>> {
                 match message {
@@ -2583,8 +2586,24 @@ unsafe extern "system" fn console_proc(
             return DefSubclassProc(view, message, w, l);
         }
         let app = &*(data as *const App);
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            console_message(app, view, message, w, l)
+        })) {
+            Ok(result) => result,
+            Err(_) => {
+                app.enqueue(Event::Fatal);
+                0
+            }
+        }
+    }
+}
+unsafe fn console_message(app: &App, view: Hwnd, message: u32, w: usize, l: isize) -> isize {
+    unsafe {
         if app.suppress.get() > 0 || !app.state.borrow().terminal_visible {
             return DefSubclassProc(view, message, w, l);
+        }
+        if message == 0x87 {
+            return DefSubclassProc(view, message, w, l) | 0x87;
         }
         let bytes = match message {
             0x100 => match w {
@@ -2604,6 +2623,13 @@ unsafe extern "system" fn console_proc(
                     return DefSubclassProc(view, 0x301, 0, 0);
                 } else if w == 8 {
                     Some(vec![127])
+                } else if (0xd800..=0xdbff).contains(&w) {
+                    app.terminal_high.set(Some(w as u16));
+                    return 0;
+                } else if let Some(high) = app.terminal_high.take() {
+                    String::from_utf16(&[high, w as u16])
+                        .ok()
+                        .map(String::into_bytes)
                 } else {
                     char::from_u32(w as u32).map(|c| c.to_string().into_bytes())
                 }
@@ -2875,6 +2901,11 @@ impl App {
                     .contains("Test streamed response")
                 {
                     self.put(115, "Retained draft 🦀");
+                    let chat = self.state.borrow().chat[&1];
+                    set_selection(chat, 10, 15);
+                    send(chat, 0xb6, 0, 12); // Scroll twelve actual native lines.
+                    let scrolled = send(chat, 0xce, 0, 0);
+                    assert!(scrolled > 0, "Native conversation did not scroll");
                     for _ in 1..20 {
                         self.action(102, 0).unwrap();
                     }
@@ -2885,7 +2916,20 @@ impl App {
                     send(self.h(101), 0x186, 0, 0);
                     self.action(101, 1).unwrap();
                     assert_eq!(text(self.h(115)), "Retained draft 🦀");
-                    assert!(text(self.state.borrow().chat[&1]).contains("Test streamed response"));
+                    assert!(text(chat).contains("Test streamed response"));
+                    assert_eq!(selection(chat), (10, 15));
+                    assert_eq!(send(chat, 0xce, 0, 0), scrolled);
+                    let (old, epoch) = {
+                        let mut s = self.state.borrow_mut();
+                        let session = s.workspace.sessions.get_mut(&1).unwrap();
+                        let old = (session.transcript.len(), session.transcript_epoch);
+                        session.append("\nTest-only background delta while scrolled\n");
+                        old
+                    };
+                    self.update_chat(1, old, epoch);
+                    assert_eq!(selection(chat), (10, 15));
+                    assert_eq!(send(chat, 0xce, 0, 0), scrolled);
+                    send(chat, 0xb6, 0, -scrolled);
                     self.capture("rivet-windows-agents.bmp").unwrap();
                 } else {
                     advance = false;
@@ -2900,6 +2944,8 @@ impl App {
             4 => {
                 let view = self.state.borrow().docs.front().map(|d| d.view);
                 if let Some(view) = view {
+                    let dialog_code = send(view, 0x87, 13, 0);
+                    assert_eq!(dialog_code & 0x87, 0x87);
                     assert!(
                         !active_doc(&self.state.borrow())
                             .unwrap()
@@ -2994,6 +3040,8 @@ impl App {
                     self.action(520, 0).unwrap();
                     self.put(523, "set RV=RIVET_");
                     self.action(524, 0).unwrap();
+                    self.put(523, "echo PTY_WORKSPACE>rivet-pty-cwd.txt");
+                    self.action(524, 0).unwrap();
                     self.put(523, "echo %RV%PTY_OK");
                     self.action(524, 0).unwrap();
                 } else {
@@ -3018,6 +3066,10 @@ impl App {
                             .any(|t| t.screen.render().contains("RIVET_PTY_OK"))
                 };
                 if ready {
+                    assert_eq!(
+                        std::fs::read_to_string(root.join("rivet-pty-cwd.txt")).unwrap(),
+                        "PTY_WORKSPACE\r\n"
+                    );
                     self.show_terminal();
                     self.capture("rivet-windows-tools.bmp").unwrap();
                     for _ in 0..5 {
@@ -3158,7 +3210,12 @@ fn fixture() -> Box<dyn AgentBackend> {
                 AgentCommand::Send { key, .. } => {
                     q.push_back(AgentEvent::Delta {
                         key,
-                        text: "Test streamed response 🦀".into(),
+                        text: format!(
+                            "Test streamed response 🦀\n{}",
+                            (1..=80)
+                                .map(|i| format!("Test-only activity line {i}\n"))
+                                .collect::<String>()
+                        ),
                     });
                     q.push_back(AgentEvent::Finished { key });
                 }

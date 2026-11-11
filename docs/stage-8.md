@@ -32,8 +32,9 @@ complete. Remaining release gates include:
 1. Real Copilot model streaming/permission/multi-agent tests with working entitlement.
 2. Native macOS execution of the consolidated tests and reference-hardware latency,
    memory, startup, and long-session benchmarks; cold shell performance remains unproven.
-3. Windows UI, browser, ConPTY, atomic source saves, and per-user packaging. Linux UI is
-   deferred. Windows/Linux CLI and shared-core CI do not imply native desktop support.
+3. Windows native acceptance and reference-hardware profiling. A Win32 frontend,
+   WebView2 browser, ConPTY, native source-save backend and per-user development package
+   are now implemented; see [Windows evidence and limits](windows.md). Linux UI is deferred.
 4. Full accessibility/VoiceOver and IME testing, large-document budgets covering all
    editor allocations, unsaved-edit crash restoration, automatic file watching, advanced
    diff/conflict editing, full terminal emulation, incremental LSP/completion insertion.

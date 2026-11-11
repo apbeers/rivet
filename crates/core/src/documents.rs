@@ -194,17 +194,30 @@ impl FileWorker {
                             expected,
                             snapshot,
                             revision,
-                        } => Ok(match save(&root, &path, &expected, &snapshot) {
-                            Ok(_) => FileEvent::Saved {
-                                path,
-                                text: Arc::from(snapshot.text()),
-                                revision,
-                            },
-                            Err(error) => FileEvent::SaveFailed {
-                                path,
-                                message: error.to_string(),
-                            },
-                        }),
+                        } => {
+                            // Normalized native editors retain the disk's CRLF style.
+                            // Materialize and convert only here, off the UI thread;
+                            // the acknowledgement must contain the actual saved bytes.
+                            let snapshot = if normalize && expected.contains("\r\n") {
+                                crate::editor::Buffer::new(Arc::from(
+                                    snapshot.text().replace('\n', "\r\n"),
+                                ))
+                                .snapshot()
+                            } else {
+                                snapshot
+                            };
+                            Ok(match save(&root, &path, &expected, &snapshot) {
+                                Ok(_) => FileEvent::Saved {
+                                    path,
+                                    text: Arc::from(snapshot.text()),
+                                    revision,
+                                },
+                                Err(error) => FileEvent::SaveFailed {
+                                    path,
+                                    message: error.to_string(),
+                                },
+                            })
+                        }
                         FileCommand::List { root, path } => scoped(&root, &path).and_then(|path| {
                             let mut entries = Vec::new();
                             for entry in fs::read_dir(&path)?.take(10_000) {
@@ -373,6 +386,51 @@ fn normalize_lines(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn normalized_saves_acknowledge_crlf_bytes_for_subsequent_saves() {
+        let root = std::env::temp_dir().join(format!("rivet-crlf-save-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("source.rs");
+        fs::write(&path, "original\r\n").unwrap();
+        // The native atomic-replace backend is tested on Windows separately.
+        let worker = FileWorker::spawn_with_save_and_normalization(
+            |_, path, expected, snapshot| {
+                assert_eq!(fs::read_to_string(path)?, expected);
+                fs::write(path, snapshot.text())?;
+                Ok(path.to_owned())
+            },
+            true,
+        )
+        .unwrap();
+        let mut expected: Arc<str> = Arc::from("original\r\n");
+        for revision in 1..=2 {
+            let normalized = format!("saved 🦀 {revision}\n");
+            worker
+                .submit(FileCommand::Save {
+                    root: root.clone(),
+                    path: path.clone(),
+                    expected,
+                    snapshot: crate::editor::Buffer::new(Arc::from(normalized.as_str())).snapshot(),
+                    revision,
+                })
+                .unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            expected = loop {
+                if let Some(event) = worker.try_event() {
+                    let FileEvent::Saved { text, .. } = event else {
+                        panic!("CRLF save failed: {event:?}");
+                    };
+                    assert_eq!(&*text, normalized.replace('\n', "\r\n"));
+                    assert_eq!(&*text, fs::read_to_string(&path).unwrap());
+                    break text;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(5));
+            };
+        }
+        drop(worker);
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn normalized_editor_buffers_keep_original_disk_text() {
         let root = std::env::temp_dir().join(format!("rivet-line-endings-{}", std::process::id()));

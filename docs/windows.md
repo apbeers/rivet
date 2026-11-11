@@ -7,6 +7,9 @@ crate, compiled only on Windows. macOS and future Linux UI backends remain indep
 
 Run `rivet.exe` or `rivet.exe ui` to open the workspace. Agent sessions retain their
 native conversation controls, drafts, selection and scroll state while switching.
+Resident transcripts are capped at 1 MiB per session; this initial RichEdit frontend
+does not implement event-list virtualization or establish the 100,000-event native
+scrolling target. The separate headless algorithm benchmark is not UI evidence.
 SDK create/resume, streaming, cancellation, models, instructions, and explicit tool
 approvals use the existing adapter. Interactive turns are serial; Tasks provides
 parallel SDK sessions in isolated worktrees and validates before reviewed integration.
@@ -20,6 +23,9 @@ a bounded 256 KiB fallback; larger unsupported edits are reverted with an error.
 Saving stages on a worker, checks for external changes, flushes content and uses
 Windows `ReplaceFileW` to preserve the original file's DACL/streams. This is not a
 filesystem compare-and-swap or proof of power-loss durability for all filesystems.
+CRLF conversion runs on the save worker, and line-ending classification is cached
+instead of rescanning the original file during each keystroke. Native buffers and
+undo history still need a combined memory budget and large-file profiling.
 
 Tools supports exact-command confirmation, bounded output, cancellation, Git status
 and HEAD diffs, and installed stdio language servers. Hover, definition navigation,
@@ -32,6 +38,9 @@ workers; output continues draining during console shutdown. Four retained sessio
 the constrained first-party UTF-8/VT grid. Full terminal emulation, wide glyph widths,
 complex graphemes, terminal IME behavior and full-screen applications remain open.
 Job supervision does not provide filesystem or credential sandboxing.
+The initial `cmd.exe` terminal supports local disk workspaces, including canonical
+disk paths; UNC workspaces report an explicit terminal limitation. Its standard
+handles are initialized through ConPTY even if Rivet's own output is redirected.
 
 Browser tabs use WebView2 asynchronously on the UI's COM STA. Five retained controllers
 are cached; warm switching does not recreate them. Only HTTP(S) and about:blank can be
@@ -50,6 +59,7 @@ MSVC builds statically link the C runtime to avoid an elevated VC++ installer pr
 Run `Install-Rivet.ps1` from the extracted package to install/update under
 `%LocalAppData%/Programs/Rivet`; no service, registry registration or PATH change is made.
 Quit Rivet before updating. `Uninstall-Rivet.ps1` removes only known application files;
+updates retain user-added files in the installation directory, and
 settings and SDK references remain under `%LocalAppData%/Rivet` for explicit user removal.
 The product installer never automatically installs development tools or browser runtimes.
 Microsoft's Evergreen installer supports per-user installation when run without elevation.
