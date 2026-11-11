@@ -3,6 +3,12 @@ pub mod diff;
 pub mod documents;
 pub mod editor;
 pub mod journal;
+pub mod json;
+pub mod lsp;
+pub mod process;
+pub mod task_service;
+pub mod tasks;
+pub mod terminal;
 use std::{collections::BTreeMap, path::PathBuf};
 
 #[derive(Debug, Clone, Default)]
@@ -68,6 +74,7 @@ pub struct LiveSession {
     pub draft: String,
     pub config: AgentConfig,
     pub transcript: String,
+    pub transcript_epoch: u64,
     pub busy: bool,
     pub scroll_y: f64,
 }
@@ -76,6 +83,7 @@ impl LiveSession {
         // Bounded resident transcript; SDK owns the full session history.
         const LIMIT: usize = 1_048_576;
         if self.transcript.len() + text.len() > LIMIT {
+            self.transcript_epoch = self.transcript_epoch.wrapping_add(1);
             self.transcript.clear();
             self.transcript
                 .push_str("[Older output remains in SDK session history.]\n");

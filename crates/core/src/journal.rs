@@ -1,7 +1,7 @@
 //! Bounded, checksummed records. Torn tails are truncated; corruption is an error.
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 const MAGIC: &[u8; 4] = b"RVJ1";
@@ -10,6 +10,8 @@ pub type Records = Vec<(u16, Vec<u8>)>;
 pub struct Journal {
     file: File,
     sequence: u64,
+    path: PathBuf,
+    _lock: Option<File>,
 }
 fn checksum(bytes: &[u8]) -> u32 {
     let mut crc = !0u32;
@@ -27,7 +29,7 @@ fn invalid(message: &str) -> io::Error {
 impl Journal {
     pub fn open(path: &Path) -> io::Result<(Self, Records)> {
         let mut created_parents = Vec::new();
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             for ancestor in parent.ancestors() {
                 if ancestor.exists() {
                     created_parents.push(ancestor.to_path_buf());
@@ -38,15 +40,18 @@ impl Journal {
             fs::create_dir_all(parent)?;
         }
         let mut options = OpenOptions::new();
-        options.read(true).append(true).create(true).truncate(false);
+        options.read(true).write(true).create(true).truncate(false);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut file = options.open(path)?;
-        file.try_lock()
+        let mut lock_path = path.as_os_str().to_owned();
+        lock_path.push(".lock");
+        let lock = options.open(Path::new(&lock_path))?;
+        lock.try_lock()
             .map_err(|e| io::Error::other(format!("Journal lock unavailable: {e}")))?;
+        let mut file = options.open(path)?;
         #[cfg(unix)]
         {
             for parent in &created_parents {
@@ -111,7 +116,53 @@ impl Journal {
             }
         }
 
-        Ok((Self { file, sequence }, records))
+        Ok((
+            Self {
+                file,
+                sequence,
+                path: path.to_owned(),
+                _lock: Some(lock),
+            },
+            records,
+        ))
+    }
+    /// Atomically replace history with a versioned, checksummed state snapshot.
+    /// The separate lock remains held across replacement; a crash leaves old or new state.
+    pub fn checkpoint(&mut self, records: &Records) -> io::Result<()> {
+        if records.len() > 100_000 {
+            return Err(invalid("snapshot record budget exceeded"));
+        }
+        let mut temporary = self.path.as_os_str().to_owned();
+        temporary.push(".snapshot-new");
+        let temporary = PathBuf::from(temporary);
+        // A stale temporary from an interrupted checkpoint is never treated as committed.
+        let _ = fs::remove_file(&temporary);
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&temporary)?;
+        let mut snapshot = Self {
+            file,
+            sequence: 0,
+            path: temporary.clone(),
+            _lock: None,
+        };
+        for (kind, payload) in records {
+            snapshot.append(*kind, payload)?;
+        }
+        snapshot.file.sync_all()?;
+        fs::rename(&temporary, &self.path)?;
+        #[cfg(unix)]
+        if let Some(parent) = self.path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
+        self.file = snapshot.file;
+        self.sequence = snapshot.sequence;
+        Ok(())
     }
     /// Success means data reached durable storage. Caller must use a worker.
     pub fn append(&mut self, kind: u16, payload: &[u8]) -> io::Result<()> {
@@ -128,6 +179,7 @@ impl Journal {
         record.extend_from_slice(&kind.to_le_bytes());
         record.extend_from_slice(payload);
         record.extend_from_slice(&checksum(&record).to_le_bytes());
+        self.file.seek(SeekFrom::End(0))?;
         self.file.write_all(&record)?;
         self.file.sync_all()?;
         self.sequence = sequence;
@@ -150,6 +202,30 @@ pub fn user_data_dir() -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn checkpoint_preserves_exclusion_and_replay() {
+        let dir = std::env::temp_dir().join(format!("rivet-checkpoint-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("journal");
+        let (mut journal, _) = Journal::open(&path).unwrap();
+        journal.append(1, b"old history").unwrap();
+        journal
+            .checkpoint(&vec![(10, b"current state".to_vec())])
+            .unwrap();
+        assert!(Journal::open(&path).is_err());
+        journal.append(11, b"later event").unwrap();
+        drop(journal);
+        let (journal, records) = Journal::open(&path).unwrap();
+        assert_eq!(
+            records,
+            vec![
+                (10, b"current state".to_vec()),
+                (11, b"later event".to_vec())
+            ]
+        );
+        drop(journal);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn recovers_partial_tail_but_rejects_corruption() {
         let dir = std::env::temp_dir().join(format!("rivet-journal-{}", std::process::id()));

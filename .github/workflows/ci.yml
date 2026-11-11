@@ -47,4 +47,28 @@ jobs:
 
       - name: Live workspace native controls (test backend)
         if: runner.os == 'macOS'
-        run: python -c "import subprocess; r = subprocess.run(['target/debug/rivet', 'ui', '--live-smoke'], capture_output=True, text=True, timeout=60); print(r.stdout); print(r.stderr); assert r.returncode == 0 and 'RIVET_LIVE_UI_SMOKE_PASS' in r.stdout"
+        run: python tools/run_live_smoke.py
+      - name: Upload live workspace diagnostics
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-live-workspace
+          path: |
+            rivet-live-smoke.log
+            rivet-live-sample.txt
+          if-no-files-found: warn
+      - name: Assemble development app bundle
+        if: runner.os == 'macOS'
+        run: python tools/package_macos.py --binary target/debug/rivet
+      - name: Per-user development install and update
+        if: runner.os == 'macOS'
+        run: |
+          bash tools/install_macos.sh dist/Rivet.app
+          bash tools/install_macos.sh dist/Rivet.app
+          codesign --verify --deep --strict "$HOME/Applications/Rivet.app"
+      - name: Upload development bundle
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rivet-macos-development
+          path: dist/Rivet-macOS-development.zip

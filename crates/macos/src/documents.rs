@@ -108,6 +108,12 @@ impl Documents {
     pub fn any_dirty(&self) -> bool {
         self.tabs.iter().any(|t| t.view.is_dirty())
     }
+    pub fn active_editor_retained(&self) -> Option<Retained<EditorView>> {
+        self.tabs
+            .iter()
+            .find(|t| Some(&t.path) == self.active.as_ref())
+            .map(|t| t.view.clone())
+    }
     pub fn active_editor(&self) -> Option<&EditorView> {
         self.tabs
             .iter()

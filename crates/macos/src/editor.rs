@@ -69,6 +69,62 @@ impl EditorView {
         this.highlight();
         this
     }
+    pub fn go_to(&self, line: u32, character: u32) {
+        let b = self.ivars().buffer.borrow();
+        if let Some(start) = b.line_utf16(line as usize) {
+            let offset = start + character as usize;
+            if b.utf16_to_byte(offset).is_ok() {
+                let r = NSRange::new(offset, 0);
+                self.setSelectedRange(r);
+                self.scrollRangeToVisible(r);
+            }
+        }
+    }
+    pub fn apply_semantic(&self, data: &[u32], legend: &[String]) -> usize {
+        let b = self.ivars().buffer.borrow();
+        let (mut line, mut column, mut count) = (0usize, 0usize, 0usize);
+        if let Some(storage) = unsafe { self.textStorage() } {
+            for t in data.as_chunks::<5>().0.iter().take(512) {
+                if t[0] > 0 {
+                    line = line.saturating_add(t[0] as usize);
+                    column = t[1] as usize;
+                } else {
+                    column = column.saturating_add(t[1] as usize);
+                }
+                let Some(start) = b.line_utf16(line).and_then(|u| u.checked_add(column)) else {
+                    continue;
+                };
+                let Some(end) = start.checked_add(t[2] as usize) else {
+                    continue;
+                };
+                if b.utf16_to_byte(start).is_err() || b.utf16_to_byte(end).is_err() {
+                    continue;
+                }
+                let color = match legend.get(t[3] as usize).map(String::as_str) {
+                    Some("keyword" | "type" | "class") => NSColor::systemPurpleColor(),
+                    Some("string") => NSColor::systemRedColor(),
+                    Some("comment") => NSColor::systemGreenColor(),
+                    Some("number") => NSColor::systemOrangeColor(),
+                    _ => NSColor::labelColor(),
+                };
+                unsafe {
+                    storage.addAttribute_value_range(
+                        NSForegroundColorAttributeName,
+                        &color,
+                        NSRange::new(start, end - start),
+                    );
+                }
+                count += 1;
+            }
+        }
+        count
+    }
+    pub fn byte_len(&self) -> usize {
+        self.ivars().buffer.borrow().len()
+    }
+    pub fn position(&self, offset: usize) -> Result<(usize, usize), String> {
+        self.ivars().buffer.borrow().position(offset)
+    }
     pub fn snapshot(&self) -> Snapshot {
         self.ivars().buffer.borrow().snapshot()
     }

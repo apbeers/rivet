@@ -98,6 +98,17 @@ impl Buffer {
         }
         Ok(result)
     }
+    pub fn line_utf16(&self, line: usize) -> Option<usize> {
+        self.lines.get(line).map(|(_, u)| *u)
+    }
+    pub fn position(&self, offset: usize) -> Result<(usize, usize), String> {
+        self.utf16_to_byte(offset)?;
+        let line = self
+            .lines
+            .partition_point(|(_, u)| *u <= offset)
+            .saturating_sub(1);
+        Ok((line, offset - self.lines[line].1))
+    }
     pub fn utf16_to_byte(&self, index: usize) -> Result<usize, String> {
         let line = self
             .lines

@@ -70,7 +70,12 @@ struct State {
     timer: OnceCell<Retained<NSTimer>>,
     smoke_tick: Cell<Option<u16>>,
     closing: Cell<bool>,
+    host_stopped: Cell<bool>,
+    cached_paths: RefCell<Vec<PathBuf>>,
     mode: Cell<u8>,
+    tools: OnceCell<Retained<super::tools::Tools>>,
+    tasks: OnceCell<Retained<super::tasks::Tasks>>,
+    task_host: RefCell<Option<rivet_core::task_service::Host>>,
     review: OnceCell<RefCell<Review>>,
     discard_pending: RefCell<Option<(PathBuf, u64)>>,
     browsers: RefCell<Browsers>,
@@ -99,7 +104,7 @@ define_class!(
             self.save_draft(); let mut state=self.ivars().workspace.borrow_mut();let key=state.active;let s=state.sessions.get_mut(&key).unwrap();
             if s.sdk_id.is_none(){drop(state);self.status("Connect this session before sending");return;}
             if s.busy{drop(state);self.status("A turn is already running");return;}
-            let prompt=s.draft.clone();if prompt.trim().is_empty(){return;} let old=s.transcript.len();
+            let prompt=s.draft.clone();if prompt.trim().is_empty(){return;} let old=(s.transcript.len(),s.transcript_epoch);
             if let Err(e)=self.ivars().host.borrow().submit(AgentCommand::Send{key,prompt:prompt.clone()}){drop(state);self.status(&e);return;}
             s.busy=true;s.append(&format!("\nYou: {prompt}\n\n"));s.draft.clear();drop(state);self.update_view(key,old);self.controls().draft.setStringValue(&NSString::new());self.status("Agent working; review tool permissions below");
         }
@@ -119,7 +124,7 @@ define_class!(
         #[unsafe(method(parentDirectory:))] fn parent_directory(&self,_sender:&NSButton){let parent=self.ivars().directory.borrow().parent().map(|p|p.to_path_buf());if let Some(path)=parent{self.file_job(FileCommand::List{root:self.root_path(),path});}}
         #[unsafe(method(selectFile:))] fn select_file(&self,sender:&NSPopUpButton){let item=self.ivars().entries.borrow().get(sender.indexOfSelectedItem() as usize).cloned();if let Some((path,folder))=item{self.file_job(if folder{FileCommand::List{root:self.root_path(),path}}else{FileCommand::Read{root:self.root_path(),path}});}}
         #[unsafe(method(openPath:))] fn open_path(&self,_sender:&NSButton){self.file_job(FileCommand::Read{root:self.root_path(),path:PathBuf::from(self.controls().path.stringValue().to_string())});}
-        #[unsafe(method(selectCached:))] fn select_cached(&self,sender:&NSPopUpButton){let path=self.ivars().documents.borrow().paths().get(sender.indexOfSelectedItem() as usize).cloned();if let Some(path)=path{self.ivars().documents.borrow_mut().select_cached(&path,self.content_frame());self.apply_mode();}}
+        #[unsafe(method(selectCached:))] fn select_cached(&self,sender:&NSPopUpButton){let path=self.ivars().cached_paths.borrow().get(sender.indexOfSelectedItem() as usize).cloned();if let Some(path)=path{self.ivars().documents.borrow_mut().select_cached(&path,self.content_frame());self.apply_mode();}}
         #[unsafe(method(saveFile:))] fn save_file(&self,_sender:&NSButton){let docs=self.ivars().documents.borrow();if let (Some(path),Some(editor))=(docs.active.clone(),docs.active_editor()){self.file_job(FileCommand::Save{root:self.root_path(),path,expected:editor.base(),snapshot:editor.snapshot(),revision:editor.revision()});self.status("Saving in background…");}}
         #[unsafe(method(undoFile:))] fn undo_file(&self,_sender:&NSButton){if let Some(editor)=self.ivars().documents.borrow().active_editor(){editor.undo_edit();}}
         #[unsafe(method(redoFile:))] fn redo_file(&self,_sender:&NSButton){if let Some(editor)=self.ivars().documents.borrow().active_editor(){editor.redo_edit();}}
@@ -135,21 +140,28 @@ define_class!(
             for _ in 0..64 {
                 let event=self.ivars().host.borrow_mut().try_event();let Some(event)=event else {break;};
                 let key=match &event{AgentEvent::Ready{key,..}|AgentEvent::Delta{key,..}|AgentEvent::Activity{key,..}|AgentEvent::Finished{key}|AgentEvent::Error{key,..}=>Some(*key),_=>None};
-                let old=key.and_then(|k|self.ivars().workspace.borrow().sessions.get(&k).map(|s|s.transcript.len())).unwrap_or(0);
+                let old=key.and_then(|k|self.ivars().workspace.borrow().sessions.get(&k).map(|s|(s.transcript.len(),s.transcript_epoch))).unwrap_or((0,0));
                 self.ivars().workspace.borrow_mut().apply(&event);
                 if let Some(key)=key{self.update_view(key,old);}
                 match event {
-                    AgentEvent::Stopped=>{if let Some(t)=self.ivars().timer.get(){t.invalidate();}NSApplication::sharedApplication(self.mtm()).replyToApplicationShouldTerminate(true);},
+                    AgentEvent::Stopped=>{self.ivars().host_stopped.set(true);self.status("Copilot runtime stopped");},
                     AgentEvent::Status(text)=>self.status(&text),
                     AgentEvent::Error{message,..}=>self.status(&message),
-                    AgentEvent::Ready{..}=>{self.status("Session connected; model/instructions are fixed for this connection");self.show_active();},
-                    AgentEvent::Models(models)=>{let c=self.controls();c.model.removeAllItems();c.model.addItemWithTitle(&NSString::from_str("SDK default"));for model in models{c.model.addItemWithTitle(&NSString::from_str(&model));}self.show_active();},
+                    AgentEvent::Ready{key,..}=>{self.status("Session connected; model/instructions are fixed for this connection");if key==self.ivars().workspace.borrow().active {self.controls().model.setEnabled(false);self.controls().instructions.setEnabled(false);}},
+                    AgentEvent::Models(models)=>{let c=self.controls();let selected=c.model.titleOfSelectedItem();c.model.removeAllItems();c.model.addItemWithTitle(&NSString::from_str("SDK default"));for model in models{c.model.addItemWithTitle(&NSString::from_str(&model));}if let Some(title)=selected{c.model.selectItemWithTitle(&title);}},
                     AgentEvent::SavedSession{id}=>{let c=self.controls();if c.saved.indexOfItemWithTitle(&NSString::from_str(&id))<0{c.saved.addItemWithTitle(&NSString::from_str(&id));}},
                     AgentEvent::Permission{key,request,description}=>{self.ivars().permissions.borrow_mut().push_back((key,request,description));self.show_permission();},
                     AgentEvent::Finished{..}=>self.status("Turn finished"),_=>{},
                 }
             }
             self.poll_files();
+            if let Some(tools)=self.ivars().tools.get(){tools.tick();if let Some((path,line,character))=tools.try_navigation(){self.file_job(FileCommand::ReadAt{root:self.root_path(),path,line,character});}}
+
+            if self.ivars().closing.get() && self.ivars().host_stopped.get() && self.ivars().tools.get().is_none_or(|tools| tools.is_finished()) && self.ivars().tasks.get().is_none_or(|tasks|tasks.is_finished()) {
+                if let Some(t)=self.ivars().timer.get(){t.invalidate();}
+                NSApplication::sharedApplication(self.mtm()).replyToApplicationShouldTerminate(true);
+            }
+            if let Some(tasks)=self.ivars().tasks.get(){tasks.tick();}
             self.smoke_step();
         }
     }
@@ -158,7 +170,8 @@ define_class!(
         #[unsafe(method(applicationShouldTerminate:))]
         fn should_terminate(&self,_app:&NSApplication)->NSApplicationTerminateReply {
             if self.ivars().documents.borrow().any_dirty(){self.status("Save or explicitly reject unsaved documents before quitting");return NSApplicationTerminateReply::TerminateCancel;}
-            self.ivars().closing.set(true); self.ivars().host.borrow().shutdown(); NSApplicationTerminateReply::TerminateLater
+            self.ivars().closing.set(true); self.ivars().host.borrow().shutdown(); if let Some(tools)=self.ivars().tools.get(){tools.shutdown();}
+            if let Some(tasks)=self.ivars().tasks.get(){tasks.shutdown();} NSApplicationTerminateReply::TerminateLater
         }
     }
     unsafe impl NSWindowDelegate for Workspace{
@@ -175,6 +188,7 @@ impl Workspace {
             return;
         };
         self.ivars().smoke_tick.set(Some(tick + 1));
+        eprintln!("RIVET_LIVE_SMOKE_STEP {tick}");
         let c = self.controls();
         let dispatch = |control: &NSControl| {
             // SAFETY: controls below have registered target/action pairs.
@@ -283,8 +297,20 @@ impl Workspace {
                 assert!(!self.ivars().documents.borrow().any_dirty());
             }
             30 => {
-                println!("RIVET_LIVE_UI_SMOKE_PASS (test backend; no model/network verification)");
-                NSApplication::sharedApplication(self.mtm()).terminate(None);
+                self.ivars().mode.set(4);
+                self.apply_mode();
+                self.ivars().tools.get().unwrap().smoke_start();
+            }
+            31..=3000 => {
+                if self.ivars().tools.get().unwrap().smoke_complete() {
+                    println!(
+                        "RIVET_LIVE_UI_SMOKE_PASS (SDK fixture; real process, LSP transport and PTY)"
+                    );
+                    self.ivars().smoke_tick.set(None);
+                    NSApplication::sharedApplication(self.mtm()).terminate(None);
+                } else {
+                    assert!(tick < 3000, "Development tools smoke did not complete");
+                }
             }
             _ => {}
         }
@@ -304,6 +330,17 @@ impl Workspace {
     fn apply_mode(&self) {
         let c = self.controls();
         let mode = self.ivars().mode.get();
+        if let Some(tasks) = self.ivars().tasks.get() {
+            tasks.setFrame(self.content_frame());
+            tasks.setHidden(mode != 5);
+        }
+        if let Some(tools) = self.ivars().tools.get() {
+            tools.setFrame(self.content_frame());
+            tools.setHidden(mode != 4);
+            let docs = self.ivars().documents.borrow();
+            tools.set_document(docs.active.clone(), docs.active_editor_retained());
+        }
+
         for v in [
             &*c.save as &NSView,
             &*c.undo,
@@ -314,7 +351,7 @@ impl Workspace {
             &*c.find,
             &*c.query,
         ] {
-            v.setHidden(mode < 2);
+            v.setHidden(mode != 2 && mode != 3);
         }
         if let Some(review) = self.ivars().review.get() {
             review.borrow().layout(self.content_frame(), mode == 3);
@@ -405,7 +442,12 @@ impl Workspace {
                     *self.ivars().entries.borrow_mut() = entries;
                     self.status(&format!("{} · showing up to 200 of {total} entries; Open path supports any workspace file",path.display()));
                 }
-                FileEvent::Loaded { path, text, buffer } => {
+                FileEvent::Loaded {
+                    path,
+                    text,
+                    buffer,
+                    cursor,
+                } => {
                     self.ivars().documents.borrow_mut().show(
                         self,
                         path.clone(),
@@ -414,12 +456,19 @@ impl Workspace {
                         self.content_frame(),
                         self.mtm(),
                     );
+                    if let Some((line, character)) = cursor
+                        && let Some(editor) = self.ivars().documents.borrow().active_editor()
+                    {
+                        editor.go_to(line, character);
+                    }
                     let c = self.controls();
                     c.cached.removeAllItems();
-                    for path in self.ivars().documents.borrow().paths() {
+                    let paths = self.ivars().documents.borrow().paths();
+                    for path in &paths {
                         c.cached
                             .addItemWithTitle(&NSString::from_str(&path.to_string_lossy()));
                     }
+                    *self.ivars().cached_paths.borrow_mut() = paths;
                     c.cached
                         .selectItemWithTitle(&NSString::from_str(&path.to_string_lossy()));
                     self.ivars().mode.set(2);
@@ -469,6 +518,7 @@ impl Workspace {
     fn new(
         mtm: MainThreadMarker,
         host: Box<dyn AgentBackend>,
+        tasks: Option<rivet_core::task_service::Host>,
         smoke: bool,
     ) -> Result<Retained<Self>, String> {
         let this = Self::alloc(mtm).set_ivars(State {
@@ -479,7 +529,12 @@ impl Workspace {
             permissions: RefCell::new(VecDeque::new()),
             timer: OnceCell::new(),
             closing: Cell::new(false),
+            host_stopped: Cell::new(false),
+            cached_paths: RefCell::new(Vec::new()),
             mode: Cell::new(0),
+            tools: OnceCell::new(),
+            tasks: OnceCell::new(),
+            task_host: RefCell::new(tasks),
             review: OnceCell::new(),
             discard_pending: RefCell::new(None),
             browsers: RefCell::new(Browsers::new()),
@@ -492,13 +547,13 @@ impl Workspace {
         // SAFETY: initialize NSView after installing its Rust ivars.
         let this: Retained<Self> =
             unsafe { msg_send![super(this),initWithFrame:rect(0.0,0.0,1120.0,800.0)] };
-        this.create_controls();
+        this.create_controls()?;
         unsafe {
             let _: () = msg_send![&this, newSession: &*this.controls().new];
         }
         Ok(this)
     }
-    fn create_controls(&self) {
+    fn create_controls(&self) -> Result<(), String> {
         let mtm = self.mtm();
         let sessions = NSPopUpButton::initWithFrame_pullsDown(
             NSPopUpButton::alloc(mtm),
@@ -573,7 +628,7 @@ impl Workspace {
             self.addSubview(view);
         }
         let mut modes = Vec::new();
-        for (id, title) in ["Agents", "Browser", "Documents", "Review"]
+        for (id, title) in ["Agents", "Browser", "Documents", "Review", "Tools", "Tasks"]
             .iter()
             .enumerate()
         {
@@ -657,6 +712,16 @@ impl Workspace {
             .ivars()
             .review
             .set(RefCell::new(Review::new(self, mtm)));
+        let tasks = super::tasks::Tasks::new(
+            mtm,
+            workspace.clone(),
+            self.ivars().task_host.borrow_mut().take(),
+        );
+        self.addSubview(&tasks);
+        let _ = self.ivars().tasks.set(tasks);
+        let tools = super::tools::Tools::new(mtm, workspace.clone())?;
+        self.addSubview(&tools);
+        let _ = self.ivars().tools.set(tools);
         let _ = self.ivars().controls.set(Controls {
             save,
             undo,
@@ -701,6 +766,7 @@ impl Workspace {
         self.layout_controls();
         self.show_permission();
         self.apply_mode();
+        Ok(())
     }
     fn layout_controls(&self) {
         let Some(c) = self.ivars().controls.get() else {
@@ -759,6 +825,13 @@ impl Workspace {
         c.query
             .setFrame(rect(775.0, 165.0, (w - 870.0).max(20.0), 28.0));
         c.find.setFrame(rect(w - 90.0, 165.0, 78.0, 30.0));
+        if let Some(tools) = self.ivars().tools.get() {
+            tools.setFrame(self.content_frame());
+        }
+        if let Some(tasks) = self.ivars().tasks.get() {
+            tasks.setFrame(self.content_frame());
+            tasks.setHidden(self.ivars().mode.get() != 5);
+        }
         if let Some(review) = self.ivars().review.get() {
             review
                 .borrow()
@@ -809,19 +882,19 @@ impl Workspace {
         c.scroll.setDocumentView(Some(view));
         view.scrollPoint(NSPoint::new(0.0, s.scroll_y));
     }
-    fn update_view(&self, key: u64, old: usize) {
+    fn update_view(&self, key: u64, old: (usize, u64)) {
         let state = self.ivars().workspace.borrow();
         let Some(s) = state.sessions.get(&key) else {
             return;
         };
         let mut views = self.ivars().views.borrow_mut();
         let view = views.entry(key).or_insert_with(|| self.text_view());
-        if old > s.transcript.len() {
+        if old.1 != s.transcript_epoch || old.0 > s.transcript.len() {
             view.setString(&NSString::from_str(&s.transcript));
         } else if let Some(storage) = unsafe { view.textStorage() } {
             let text = NSAttributedString::initWithString(
                 NSAttributedString::alloc(),
-                &NSString::from_str(&s.transcript[old..]),
+                &NSString::from_str(&s.transcript[old.0..]),
             );
             storage.appendAttributedString(&text);
         }
@@ -876,11 +949,15 @@ impl Workspace {
         self.show_permission();
     }
 }
-pub fn run(host: Box<dyn AgentBackend>, smoke: bool) -> Result<(), String> {
+pub fn run(
+    host: Box<dyn AgentBackend>,
+    tasks: Option<rivet_core::task_service::Host>,
+    smoke: bool,
+) -> Result<(), String> {
     let mtm = MainThreadMarker::new().ok_or("AppKit requires the main thread")?;
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-    let root = Workspace::new(mtm, host, smoke)?;
+    let root = Workspace::new(mtm, host, tasks, smoke)?;
     // SAFETY: main-thread designated initializer, retained through the event loop.
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(

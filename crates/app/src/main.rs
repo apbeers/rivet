@@ -129,7 +129,15 @@ fn launch_ui(smoke: bool) -> Result<(), String> {
             rivet_core::journal::user_data_dir().map_err(|e| e.to_string())?,
         )?) as Box<dyn rivet_core::AgentBackend>)
     };
-    rivet_macos::run(smoke, backend)
+    let tasks = if smoke {
+        None
+    } else {
+        Some(rivet_core::task_service::Host::spawn(
+            rivet_core::journal::user_data_dir().map_err(|e| e.to_string())?,
+            |path| Ok(Box::new(rivet_copilot::AgentHost::spawn(path)?)),
+        )?)
+    };
+    rivet_macos::run(smoke, backend, tasks)
 }
 
 #[cfg(test)]

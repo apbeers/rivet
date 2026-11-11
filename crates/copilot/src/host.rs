@@ -80,6 +80,7 @@ pub struct AgentHost {
     commands: SyncSender<AgentCommand>,
     events: async_channel::Receiver<AgentEvent>,
     stop: Arc<AtomicBool>,
+    stopped: bool,
 }
 impl AgentHost {
     pub fn spawn(data_dir: PathBuf) -> Result<Self, String> {
@@ -108,6 +109,7 @@ impl AgentHost {
             commands,
             events,
             stop,
+            stopped: false,
         })
     }
     pub fn submit(&self, command: AgentCommand) -> Result<(), String> {
@@ -116,7 +118,19 @@ impl AgentHost {
             .map_err(|_| "Agent command queue is full or disconnected".into())
     }
     pub fn try_event(&mut self) -> Option<AgentEvent> {
-        self.events.try_recv().ok()
+        match self.events.try_recv() {
+            Ok(event) => {
+                if matches!(event, AgentEvent::Stopped) {
+                    self.stopped = true;
+                }
+                Some(event)
+            }
+            Err(async_channel::error::TryRecvError::Disconnected) if !self.stopped => {
+                self.stopped = true;
+                Some(AgentEvent::Stopped)
+            }
+            Err(_) => None,
+        }
     }
 }
 impl Drop for AgentHost {
@@ -219,6 +233,9 @@ async fn serve(
                             "Copilot startup failed or timed out; verify runtime and login".into(),
                         ))
                         .await;
+                    if let AgentCommand::Open { key, .. } = &command {
+                        error(&events, *key, "Copilot startup failed or timed out").await;
+                    }
                     continue;
                 }
             }

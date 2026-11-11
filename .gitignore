@@ -29,3 +29,7 @@ __pycache__/
 # Native prototype verification artifacts
 /rivet-ui-smoke.log
 /rivet-ui-smoke.png
+
+/dist/
+/rivet-live-smoke.log
+/rivet-live-sample.txt

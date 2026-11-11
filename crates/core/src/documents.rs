@@ -15,6 +15,12 @@ const FILE_LIMIT: usize = 16 * 1024 * 1024;
 const CACHE_LIMIT: usize = 32 * 1024 * 1024;
 #[derive(Debug)]
 pub enum FileCommand {
+    ReadAt {
+        root: PathBuf,
+        path: PathBuf,
+        line: u32,
+        character: u32,
+    },
     Diff {
         before: Arc<str>,
         snapshot: crate::editor::Snapshot,
@@ -51,6 +57,7 @@ pub enum FileEvent {
         path: PathBuf,
         text: Arc<str>,
         buffer: crate::editor::Buffer,
+        cursor: Option<(u32, u32)>,
     },
     Error(String),
 }
@@ -177,12 +184,26 @@ impl FileWorker {
                             entries.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
                             Ok(FileEvent::Entries { path, entries })
                         }),
+                        FileCommand::ReadAt {
+                            root,
+                            path,
+                            line,
+                            character,
+                        } => cache
+                            .read(&root, &path)
+                            .map(|(path, text)| FileEvent::Loaded {
+                                path,
+                                buffer: crate::editor::Buffer::new(text.clone()),
+                                text,
+                                cursor: Some((line, character)),
+                            }),
                         FileCommand::Read { root, path } => {
                             cache
                                 .read(&root, &path)
                                 .map(|(path, text)| FileEvent::Loaded {
                                     path,
                                     buffer: crate::editor::Buffer::new(text.clone()),
+                                    cursor: None,
                                     text,
                                 })
                         }

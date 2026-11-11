@@ -2,7 +2,8 @@
 
 Read README.md and docs/stage-1.md before changes.
 
-- The user authorized autonomous work through stages 3–8, committing and pushing each stage.
+- The user authorized autonomous work through stages 3–8. Build locally as a consolidated
+  change; do not commit/push each stage. Run pipelines after the consolidated build and fix failures.
   Keep the Stage 2 mock benchmark separate from production features; record unmet gates.
 - macOS is the first UI target; Windows follows. Keep a future Linux frontend possible.
 - Releases must support per-user install, normal operation, update, and uninstall without

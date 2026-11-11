@@ -23,7 +23,8 @@ the current user's account:
 Release acceptance must verify install, launch, normal use, update, and uninstall on
 fresh standard-user accounts on both platforms, without administrator credentials.
 Optional installation for all users may require elevation. Installers and this acceptance
-verification are future release work; they are not implemented by the current prototype.
+verification remain release gates. A development macOS bundle and per-user install/update
+script are available; see [Stage 8](docs/stage-8.md).
 
 ## Current stage
 
@@ -36,7 +37,11 @@ Documents now include first-party piece-table editing, undo/redo/search, checked
 saves on Mac, and inline/split review of unsaved edits. See [Stage 5](docs/stage-5.md)
 for limits and remaining acceptance work.
 The earlier mock performance prototype remains available through `ui --smoke`.
-Windows and Linux currently provide CLI probes and portable tests.
+The Tools pane adds background commands, Git inspection, LSP requests, and constrained
+native PTY sessions ([Stage 6](docs/stage-6.md)). Tasks adds durable dependency scheduling,
+isolated worktrees, SDK sessions, validation and reviewed integration ([Stage 7](docs/stage-7.md)).
+These remain development features with explicit acceptance gaps. Windows and Linux
+currently provide CLI probes and portable tests.
 
 See [Stage 3 implementation and acceptance gates](docs/stage-3.md) and
 [Stage 2 performance evidence](docs/stage-2.md). Real model access remains an
