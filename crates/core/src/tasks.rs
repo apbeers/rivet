@@ -366,23 +366,54 @@ impl Coordinator {
         self.refresh()
     }
     pub fn report(&self) -> String {
-        self.tasks
+        let mut report = String::new();
+        let mut shown = 0;
+        // Recent active tasks first, then recent completed/cancelled tasks. The journal
+        // retains full records; a UI refresh must not materialize every large objective.
+        let ordered = self
+            .tasks
             .values()
-            .map(|t| {
-                format!(
-                    "#{} {:?}: {}\n  worktree={}\n  session={}\n  {}\n",
-                    t.id,
-                    t.state,
-                    t.objective,
-                    t.worktree
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default(),
-                    t.session.as_deref().unwrap_or(""),
-                    t.error.as_deref().unwrap_or("")
-                )
-            })
-            .collect()
+            .rev()
+            .filter(|t| !matches!(t.state, State::Completed | State::Cancelled))
+            .chain(
+                self.tasks
+                    .values()
+                    .rev()
+                    .filter(|t| matches!(t.state, State::Completed | State::Cancelled)),
+            );
+        for t in ordered {
+            let objective: String = t.objective.chars().take(512).collect();
+            let row = format!(
+                "#{} {:?}: {}\n  workspace={}\n  worktree={}\n  session={}\n  dependencies={:?} validation={:?}\n  {}\n",
+                t.id,
+                t.state,
+                objective,
+                t.workspace.display(),
+                t.worktree
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+                t.session.as_deref().unwrap_or(""),
+                t.dependencies,
+                t.validation,
+                t.error.as_deref().unwrap_or("")
+            );
+            let room = 32768usize.saturating_sub(report.len());
+            let mut end = row.len().min(room);
+            while !row.is_char_boundary(end) {
+                end -= 1;
+            }
+            report.push_str(&row[..end]);
+            shown += 1;
+            if report.len() >= 32000 || shown >= 80 {
+                break;
+            }
+        }
+        report.push_str(&format!(
+            "\nShowing {shown}/{} tasks. Full records remain in the task journal.\n",
+            self.tasks.len()
+        ));
+        report
     }
 }
 pub fn valid_oid(s: &str) -> bool {

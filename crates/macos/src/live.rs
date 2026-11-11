@@ -14,7 +14,7 @@ use rivet_core::documents::{FileCommand, FileEvent, FileWorker};
 use rivet_core::{AgentCommand, AgentConfig, AgentEvent, LiveWorkspace};
 use std::{
     cell::{Cell, OnceCell, RefCell},
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::PathBuf,
 };
 fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
@@ -70,6 +70,7 @@ struct State {
     timer: OnceCell<Retained<NSTimer>>,
     shutdown_timer: OnceCell<Retained<NSTimer>>,
     smoke_tick: Cell<Option<u16>>,
+    smoke_root: RefCell<Option<PathBuf>>,
     closing: Cell<bool>,
     host_stopped: Cell<bool>,
     switching: RefCell<rivet_prototype::Samples>,
@@ -82,6 +83,7 @@ struct State {
     task_host: RefCell<Option<rivet_core::task_service::Host>>,
     review: OnceCell<RefCell<Review>>,
     discard_pending: RefCell<Option<(PathBuf, u64)>>,
+    pending_saves: RefCell<BTreeSet<PathBuf>>,
     browsers: RefCell<Browsers>,
     documents: RefCell<Documents>,
     files_worker: FileWorker,
@@ -94,6 +96,8 @@ define_class!(
     struct Workspace;
     impl Workspace {
         #[unsafe(method(isFlipped))] fn flipped(&self)->bool{true}
+        #[unsafe(method(isOpaque))] fn opaque(&self)->bool{true}
+        #[unsafe(method(drawRect:))] fn draw_background(&self,dirty:NSRect){NSColor::windowBackgroundColor().setFill();NSRectFill(dirty);}
         #[unsafe(method(resizeSubviewsWithOldSize:))] fn resized(&self,_old:NSSize){self.layout_controls();}
         #[unsafe(method(newSession:))] fn new_session(&self,_sender:&NSButton){
             if self.ivars().workspace.borrow().sessions.len()>=20 {self.status("Session budget reached (20)");return;}
@@ -129,14 +133,22 @@ define_class!(
         #[unsafe(method(selectFile:))] fn select_file(&self,sender:&NSPopUpButton){let item=self.ivars().entries.borrow().get(sender.indexOfSelectedItem() as usize).cloned();if let Some((path,folder))=item{self.file_job(if folder{FileCommand::List{root:self.root_path(),path}}else{FileCommand::Read{root:self.root_path(),path}});}}
         #[unsafe(method(openPath:))] fn open_path(&self,_sender:&NSButton){self.file_job(FileCommand::Read{root:self.root_path(),path:PathBuf::from(self.controls().path.stringValue().to_string())});}
         #[unsafe(method(selectCached:))] fn select_cached(&self,sender:&NSPopUpButton){let path=self.ivars().cached_paths.borrow().get(sender.indexOfSelectedItem() as usize).cloned();if let Some(path)=path{self.ivars().documents.borrow_mut().select_cached(&path,self.content_frame());self.apply_mode();}}
-        #[unsafe(method(saveFile:))] fn save_file(&self,_sender:&NSButton){let docs=self.ivars().documents.borrow();if let (Some(path),Some(editor))=(docs.active.clone(),docs.active_editor()){self.file_job(FileCommand::Save{root:self.root_path(),path,expected:editor.base(),snapshot:editor.snapshot(),revision:editor.revision()});self.status("Saving in background…");}}
+        #[unsafe(method(saveFile:))] fn save_file(&self,_sender:&NSButton){
+            let docs=self.ivars().documents.borrow();
+            if let (Some(path),Some(editor))=(docs.active.clone(),docs.active_editor()){
+                if self.ivars().pending_saves.borrow().contains(&path){self.status("A save is already pending for this document");return;}
+                match self.ivars().files_worker.submit(FileCommand::Save{root:self.root_path(),path:path.clone(),expected:editor.base(),snapshot:editor.snapshot(),revision:editor.revision()}){
+                    Ok(())=>{self.ivars().pending_saves.borrow_mut().insert(path);self.status("Saving in background…");},Err(error)=>self.status(&error),
+                }
+            }
+        }
         #[unsafe(method(undoFile:))] fn undo_file(&self,_sender:&NSButton){if let Some(editor)=self.ivars().documents.borrow().active_editor(){editor.undo_edit();}}
         #[unsafe(method(redoFile:))] fn redo_file(&self,_sender:&NSButton){if let Some(editor)=self.ivars().documents.borrow().active_editor(){editor.redo_edit();}}
         #[unsafe(method(findText:))] fn find_text(&self,_sender:&NSButton){if let Some(editor)=self.ivars().documents.borrow().active_editor() && !editor.find(&self.controls().query.stringValue().to_string()){self.status("Text not found");}}
         #[unsafe(method(reviewChanges:))] fn review_changes(&self,_sender:&NSButton){if let Some(editor)=self.ivars().documents.borrow().active_editor(){self.file_job(FileCommand::Diff{before:editor.base(),snapshot:editor.snapshot()});}}
         #[unsafe(method(toggleReview:))] fn toggle_review(&self,_sender:&NSButton){if let Some(review)=self.ivars().review.get(){review.borrow_mut().toggle();self.apply_mode();}}
         #[unsafe(method(revertUnsaved:))] fn revert_unsaved(&self,_sender:&NSButton){
-            let docs=self.ivars().documents.borrow();let (Some(path),Some(editor))=(docs.active.clone(),docs.active_editor())else{return;};let identity=(path.clone(),editor.revision());
+            let docs=self.ivars().documents.borrow();let (Some(path),Some(editor))=(docs.active.clone(),docs.active_editor())else{return;};if self.ivars().pending_saves.borrow().contains(&path){self.status("Wait for the pending save before rejecting further edits");return;}let identity=(path.clone(),editor.revision());
             let confirmed=self.ivars().discard_pending.borrow().as_ref()==Some(&identity);if !confirmed{*self.ivars().discard_pending.borrow_mut()=Some(identity);self.controls().revert.setTitle(&NSString::from_str("Confirm discard"));self.status(&format!("Confirm rejection of unsaved edits in {}",path.display()));return;}
             self.ivars().discard_pending.borrow_mut().take();self.controls().revert.setTitle(&NSString::from_str("Reject unsaved"));editor.revert();self.status("Unsaved edits rejected; disk unchanged");
         }
@@ -152,8 +164,8 @@ define_class!(
                 match event {
                     AgentEvent::Stopped=>{self.ivars().host_stopped.set(true);self.status("Copilot runtime stopped");},
                     AgentEvent::Status(text)=>self.status(&text),
-                    AgentEvent::Error{message,..}=>self.status(&message),
-                    AgentEvent::Ready{key,..}=>{self.status("Session connected; model/instructions are fixed for this connection");if key==self.ivars().workspace.borrow().active {self.controls().model.setEnabled(false);self.controls().instructions.setEditable(false);}},
+                    AgentEvent::Error{key,message}=>{self.status(&message);if key==self.ivars().workspace.borrow().active{let editable=self.ivars().workspace.borrow().sessions[&key].sdk_id.is_none();self.controls().workspace.setEditable(editable);self.controls().connect.setEnabled(editable);self.controls().model.setEnabled(editable);self.controls().instructions.setEditable(editable);}},
+                    AgentEvent::Ready{key,..}=>{self.status("Session connected; model/instructions are fixed for this connection");if key==self.ivars().workspace.borrow().active {self.controls().model.setEnabled(false);self.controls().instructions.setEditable(false);self.controls().workspace.setEditable(false);self.controls().connect.setEnabled(false);if let Some(path)=self.ivars().workspace.borrow().sessions[&key].workspace.as_ref(){self.controls().workspace.setStringValue(&NSString::from_str(&path.to_string_lossy()));}}},
                     AgentEvent::Models(models)=>{let c=self.controls();let selected=c.model.titleOfSelectedItem();c.model.removeAllItems();c.model.addItemWithTitle(&NSString::from_str("SDK default"));for model in models{c.model.addItemWithTitle(&NSString::from_str(&model));}if let Some(title)=selected{c.model.selectItemWithTitle(&title);}},
                     AgentEvent::SavedSession{id}=>{let c=self.controls();if c.saved.indexOfItemWithTitle(&NSString::from_str(&id))<0{c.saved.addItemWithTitle(&NSString::from_str(&id));}},
                     AgentEvent::Permission{key,request,description}=>{self.ivars().permissions.borrow_mut().push_back((key,request,description));self.show_permission();},
@@ -174,7 +186,7 @@ define_class!(
     unsafe impl NSApplicationDelegate for Workspace {
         #[unsafe(method(applicationShouldTerminate:))]
         fn should_terminate(&self,_app:&NSApplication)->NSApplicationTerminateReply {
-            if self.ivars().documents.borrow().any_dirty(){self.status("Save or explicitly reject unsaved documents before quitting");return NSApplicationTerminateReply::TerminateCancel;}
+            if self.ivars().documents.borrow().any_dirty() || !self.ivars().pending_saves.borrow().is_empty(){self.status("Wait for pending saves; save or explicitly reject unsaved documents before quitting");return NSApplicationTerminateReply::TerminateCancel;}
             if !self.ivars().closing.replace(true) {
                 self.ivars().host.borrow().shutdown();
                 if let Some(tools)=self.ivars().tools.get(){tools.shutdown();}
@@ -186,7 +198,7 @@ define_class!(
     }
     unsafe impl NSWindowDelegate for Workspace{
         #[unsafe(method(windowShouldClose:))] fn should_close(&self,_window:&NSWindow)->bool{
-            let dirty=self.ivars().documents.borrow().any_dirty();if dirty{self.status("Save or explicitly reject unsaved documents before closing");}!dirty
+            let dirty=self.ivars().documents.borrow().any_dirty() || !self.ivars().pending_saves.borrow().is_empty();if dirty{self.status("Save or explicitly reject unsaved documents before closing");}!dirty
         }
 
         #[unsafe(method(windowWillClose:))] fn closed(&self,_notification:&NSNotification){self.ivars().permissions.borrow_mut().clear();if !self.ivars().closing.get(){NSApplication::sharedApplication(self.mtm()).terminate(None);}}
@@ -254,15 +266,32 @@ impl Workspace {
                 browsers.navigate("about:blank").unwrap();
             }
             20 => {
-                let path = std::env::temp_dir().join("rivet-ui-document-fixture");
-                self.ivars().documents.borrow_mut().show(
-                    self,
-                    path.clone(),
-                    std::sync::Arc::from("Native document fixture 🦀"),
-                    None,
-                    self.content_frame(),
-                    self.mtm(),
-                );
+                let root = std::env::temp_dir().join(format!(
+                    "rivet-native-smoke-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos()
+                ));
+                std::fs::create_dir(&root).unwrap();
+                let path = root.join("fixture.rs");
+                std::fs::write(&path, "Native document fixture 🦀").unwrap();
+                c.workspace
+                    .setStringValue(&NSString::from_str(root.to_str().unwrap()));
+                *self.ivars().smoke_root.borrow_mut() = Some(root);
+                self.ivars()
+                    .documents
+                    .borrow_mut()
+                    .show(
+                        self,
+                        path.clone(),
+                        std::sync::Arc::from("Native document fixture 🦀"),
+                        None,
+                        self.content_frame(),
+                        self.mtm(),
+                    )
+                    .unwrap();
                 self.ivars().mode.set(2);
                 self.apply_mode();
                 assert_eq!(
@@ -307,13 +336,55 @@ impl Workspace {
                 dispatch(&c.revert);
                 assert!(!self.ivars().documents.borrow().any_dirty());
             }
+            29 => {
+                let editor = self
+                    .ivars()
+                    .documents
+                    .borrow()
+                    .active_editor_retained()
+                    .unwrap();
+                let range = objc2_foundation::NSRange::new(0, 0);
+                let inserted = NSString::from_str("// saved native fixture\n");
+                assert!(editor.shouldChangeTextInRange_replacementString(range, Some(&inserted)));
+                unsafe {
+                    editor
+                        .textStorage()
+                        .unwrap()
+                        .replaceCharactersInRange_withString(range, &inserted);
+                }
+                editor.didChangeText();
+                dispatch(&c.save);
+                assert_eq!(self.ivars().pending_saves.borrow().len(), 1);
+                dispatch(&c.revert);
+                assert!(editor.is_dirty());
+                let reply: NSApplicationTerminateReply = unsafe {
+                    msg_send![self,applicationShouldTerminate:&*NSApplication::sharedApplication(self.mtm())]
+                };
+                assert_eq!(reply, NSApplicationTerminateReply::TerminateCancel);
+            }
             30 => {
                 self.ivars().mode.set(4);
                 self.apply_mode();
                 self.ivars().tools.get().unwrap().smoke_start();
             }
             31..=3000 => {
-                if self.ivars().tools.get().unwrap().smoke_complete() {
+                if self.ivars().tools.get().unwrap().smoke_complete()
+                    && self.ivars().pending_saves.borrow().is_empty()
+                {
+                    assert!(!self.ivars().documents.borrow().any_dirty());
+                    assert!(
+                        std::fs::read_to_string(
+                            self.ivars()
+                                .smoke_root
+                                .borrow()
+                                .as_ref()
+                                .unwrap()
+                                .join("fixture.rs")
+                        )
+                        .unwrap()
+                        .starts_with("// saved native fixture")
+                    );
+                    self.smoke_snapshot("rivet-live-tools.png");
                     println!(
                         "RIVET_LIVE_UI_SMOKE_PASS (SDK fixture; real process, LSP transport and PTY)"
                     );
@@ -369,6 +440,9 @@ impl Workspace {
                 timer.invalidate();
             }
             self.report_metrics();
+            if let Some(root) = self.ivars().smoke_root.borrow_mut().take() {
+                std::fs::remove_dir_all(root).unwrap();
+            }
             NSApplication::sharedApplication(self.mtm()).replyToApplicationShouldTerminate(true);
         }
     }
@@ -499,6 +573,10 @@ impl Workspace {
                 break;
             };
             match event {
+                FileEvent::SaveFailed { path, message } => {
+                    self.ivars().pending_saves.borrow_mut().remove(&path);
+                    self.status(&message);
+                }
                 FileEvent::Diff(diff) => {
                     self.ivars().review.get().unwrap().borrow_mut().show(diff);
                     self.ivars().mode.set(3);
@@ -510,6 +588,7 @@ impl Workspace {
                     text,
                     revision,
                 } => {
+                    self.ivars().pending_saves.borrow_mut().remove(&path);
                     self.ivars().documents.borrow().saved(&path, text, revision);
                     self.status("File saved; any newer edits remain unsaved");
                 }
@@ -536,7 +615,7 @@ impl Workspace {
                     buffer,
                     cursor,
                 } => {
-                    self.ivars().documents.borrow_mut().show(
+                    let shown = self.ivars().documents.borrow_mut().show(
                         self,
                         path.clone(),
                         text,
@@ -544,6 +623,10 @@ impl Workspace {
                         self.content_frame(),
                         self.mtm(),
                     );
+                    if let Err(error) = shown {
+                        self.status(error);
+                        continue;
+                    }
                     if let Some((line, character)) = cursor
                         && let Some(editor) = self.ivars().documents.borrow().active_editor()
                     {
@@ -629,12 +712,14 @@ impl Workspace {
             task_host: RefCell::new(tasks),
             review: OnceCell::new(),
             discard_pending: RefCell::new(None),
+            pending_saves: RefCell::new(BTreeSet::new()),
             browsers: RefCell::new(Browsers::new()),
             documents: RefCell::new(Documents::new()),
             files_worker: FileWorker::spawn().map_err(|e| e.to_string())?,
             entries: RefCell::new(Vec::new()),
             directory: RefCell::new(PathBuf::new()),
             smoke_tick: Cell::new(if smoke { Some(0) } else { None }),
+            smoke_root: RefCell::new(None),
         });
         // SAFETY: initialize NSView after installing its Rust ivars.
         let this: Retained<Self> =
@@ -962,8 +1047,15 @@ impl Workspace {
         c.draft.setStringValue(&NSString::from_str(&s.draft));
         c.instructions
             .setStringValue(&NSString::from_str(&s.config.instructions));
-        c.instructions.setEditable(s.sdk_id.is_none());
-        c.model.setEnabled(s.sdk_id.is_none());
+        if let Some(path) = &s.workspace {
+            c.workspace
+                .setStringValue(&NSString::from_str(&path.to_string_lossy()));
+        }
+        let configurable = s.sdk_id.is_none() && !s.connecting;
+        c.workspace.setEditable(configurable);
+        c.connect.setEnabled(configurable);
+        c.instructions.setEditable(configurable);
+        c.model.setEnabled(configurable);
         if s.config.model.is_empty() {
             c.model.selectItemAtIndex(0);
         } else {
@@ -1000,15 +1092,40 @@ impl Workspace {
         self.save_draft();
         let state = self.ivars().workspace.borrow();
         let key = state.active;
+        if state.sessions[&key].sdk_id.is_some() || state.sessions[&key].connecting {
+            self.status("This session is already connected. Create a new session to use a different workspace or configuration.");
+            return;
+        }
         let config: AgentConfig = state.sessions[&key].config.clone();
         let workspace = PathBuf::from(self.controls().workspace.stringValue().to_string());
         drop(state);
-        self.submit(AgentCommand::Open {
+        if let Err(error) = self.ivars().host.borrow().submit(AgentCommand::Open {
             key,
-            workspace,
+            workspace: workspace.clone(),
             resume,
             config,
-        });
+        }) {
+            self.status(&error);
+            return;
+        }
+        self.ivars()
+            .workspace
+            .borrow_mut()
+            .sessions
+            .get_mut(&key)
+            .unwrap()
+            .workspace = Some(workspace);
+        self.ivars()
+            .workspace
+            .borrow_mut()
+            .sessions
+            .get_mut(&key)
+            .unwrap()
+            .connecting = true;
+        self.controls().workspace.setEditable(false);
+        self.controls().connect.setEnabled(false);
+        self.controls().model.setEnabled(false);
+        self.controls().instructions.setEditable(false);
         self.submit(AgentCommand::Models);
         self.status("Connecting in background…");
     }
@@ -1016,7 +1133,16 @@ impl Workspace {
         let c = self.controls();
         let pending = self.ivars().permissions.borrow();
         if let Some((key, id, text)) = pending.front() {
-            c.permission.setString(&NSString::from_str(&format!("Session {key} · request {id}\n{text}\n\nReview before allowing. Permission hooks are not an OS sandbox.")));
+            let workspace = self
+                .ivars()
+                .workspace
+                .borrow()
+                .sessions
+                .get(key)
+                .and_then(|s| s.workspace.as_ref())
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            c.permission.setString(&NSString::from_str(&format!("Session {key} · request {id}\nWorkspace: {workspace}\n{text}\n\nReview before allowing. Permission hooks are not an OS sandbox.")));
             c.allow.setEnabled(true);
             c.deny.setEnabled(true);
         } else {

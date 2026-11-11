@@ -21,7 +21,7 @@ define_class!(
     let bytes=match event.keyCode(){123=>b"\x1b[D".to_vec(),124=>b"\x1b[C".to_vec(),125=>b"\x1b[B".to_vec(),126=>b"\x1b[A".to_vec(),51=>vec![127],_=>event.characters().map(|s|s.to_string().into_bytes()).unwrap_or_default()};self.write(bytes);
    }
   }
-  #[unsafe(method(paste:))] fn paste_action(&self,_sender:Option<&AnyObject>){if self.ivars().input.borrow().is_some() && let Some(text)=unsafe{NSPasteboard::generalPasteboard().stringForType(NSPasteboardTypeString)}{self.write(text.to_string().into_bytes());}}
+  #[unsafe(method(paste:))] fn paste_action(&self,_sender:Option<&AnyObject>){if self.ivars().input.borrow().is_some() && let Some(text)=unsafe{NSPasteboard::generalPasteboard().stringForType(NSPasteboardTypeString)}{if text.length()<=4096{self.write(text.to_string().into_bytes());}else{objc2_app_kit::NSBeep();}}}
  }
 );
 impl Console {

@@ -113,6 +113,9 @@ impl AgentHost {
         })
     }
     pub fn submit(&self, command: AgentCommand) -> Result<(), String> {
+        if self.stop.load(Ordering::Relaxed) {
+            return Err("Copilot host stopping".into());
+        }
         self.commands
             .try_send(command)
             .map_err(|_| "Agent command queue is full or disconnected".into())

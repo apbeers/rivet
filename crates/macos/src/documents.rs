@@ -35,7 +35,7 @@ impl Documents {
         buffer: Option<Buffer>,
         frame: NSRect,
         mtm: MainThreadMarker,
-    ) {
+    ) -> Result<(), &'static str> {
         if let Some(i) = self.tabs.iter().position(|t| t.path == path) {
             let tab = self.tabs.remove(i).unwrap();
             if !Arc::ptr_eq(&tab.text, &text) && !tab.view.is_dirty() {
@@ -45,7 +45,7 @@ impl Documents {
                 self.tabs.push_back(tab);
                 self.active = Some(path);
                 self.layout(frame, true);
-                return;
+                return Ok(());
             }
         }
         if self.tabs.iter().filter(|t| t.view.is_dirty()).count() >= 20
@@ -58,7 +58,9 @@ impl Documents {
                 + text.len()
                 > 32 * 1024 * 1024
         {
-            return;
+            return Err(
+                "Document cache full of unsaved edits; save or reject a document before opening another",
+            );
         }
         while self.tabs.len() >= 20 || self.bytes + text.len() > 32 * 1024 * 1024 {
             if let Some(index) = self.tabs.iter().position(|t| !t.view.is_dirty()) {
@@ -66,7 +68,7 @@ impl Documents {
                 self.bytes -= old.text.len();
                 old.scroll.removeFromSuperview();
             } else {
-                return;
+                return Err("Document cache full of unsaved edits");
             }
         }
         let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), frame);
@@ -87,6 +89,7 @@ impl Documents {
             view,
         });
         self.layout(frame, true);
+        Ok(())
     }
     pub fn select_cached(&mut self, path: &Path, frame: NSRect) -> bool {
         let Some(i) = self.tabs.iter().position(|t| t.path == path) else {

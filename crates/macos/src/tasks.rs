@@ -248,7 +248,7 @@ impl Tasks {
     }
     fn log(&self, text: &str) {
         let mut log = self.ivars().log.borrow_mut();
-        log.push_str(text);
+        log.extend(text.chars().take(8192));
         log.push('\n');
         if log.len() > 65536 {
             let mut cut = log.len() - 49152;

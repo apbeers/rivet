@@ -43,6 +43,10 @@ pub enum FileCommand {
 }
 #[derive(Debug)]
 pub enum FileEvent {
+    SaveFailed {
+        path: PathBuf,
+        message: String,
+    },
     Diff(crate::diff::Diff),
     Saved {
         path: PathBuf,
@@ -168,12 +172,16 @@ impl FileWorker {
                             expected,
                             snapshot,
                             revision,
-                        } => save_checked(&root, &path, &expected, &snapshot).map(|path| {
-                            FileEvent::Saved {
+                        } => Ok(match save_checked(&root, &path, &expected, &snapshot) {
+                            Ok(path) => FileEvent::Saved {
                                 path,
                                 text: Arc::from(snapshot.text()),
                                 revision,
-                            }
+                            },
+                            Err(error) => FileEvent::SaveFailed {
+                                path,
+                                message: error.to_string(),
+                            },
                         }),
                         FileCommand::List { root, path } => scoped(&root, &path).and_then(|path| {
                             let mut entries = Vec::new();
@@ -313,6 +321,61 @@ fn save_checked(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(not(windows))]
+    fn save_worker_reports_the_exact_document_and_remains_usable() {
+        let root = std::env::temp_dir().join(format!("rivet-save-worker-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("file");
+        std::fs::write(&path, "original").unwrap();
+        let worker = FileWorker::spawn().unwrap();
+        let mut buffer = crate::editor::Buffer::new(Arc::from("original"));
+        buffer.replace(0..8, "saved").unwrap();
+        let receive = || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(event) = worker.try_event() {
+                    break event;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "filesystem worker stopped answering"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        worker
+            .submit(FileCommand::Save {
+                root: root.clone(),
+                path: path.clone(),
+                expected: Arc::from("original"),
+                snapshot: buffer.snapshot(),
+                revision: 7,
+            })
+            .unwrap();
+        assert!(
+            matches!(receive(),FileEvent::Saved{path:p,revision:7,..} if p==path.canonicalize().unwrap())
+        );
+        worker
+            .submit(FileCommand::Save {
+                root: root.clone(),
+                path: path.clone(),
+                expected: Arc::from("original"),
+                snapshot: buffer.snapshot(),
+                revision: 8,
+            })
+            .unwrap();
+        assert!(matches!(receive(),FileEvent::SaveFailed{path:p,..} if p==path));
+        worker
+            .submit(FileCommand::Read {
+                root: root.clone(),
+                path: path.clone(),
+            })
+            .unwrap();
+        assert!(matches!(receive(),FileEvent::Loaded{text,..} if &*text=="saved"));
+        drop(worker);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn cached_documents_invalidate_and_paths_cannot_escape() {
         let root = std::env::temp_dir().join(format!("rivet-documents-{}", std::process::id()));

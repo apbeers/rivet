@@ -272,6 +272,9 @@ impl Tools {
         c.scroll.setFrame(r(0.0, 154.0, w, (h - 204.0).max(50.0)));
     }
     fn spec(&self) -> Result<Spec, String> {
+        if self.ivars().closing.get() {
+            return Err("Development services stopping".into());
+        }
         let root = self.root();
         let text = self.c().args.stringValue().to_string();
         if text.len() > 16 * 1024 {
@@ -679,6 +682,9 @@ impl Tools {
         }
     }
     fn open_terminal(&self) {
+        if self.ivars().closing.get() {
+            return;
+        }
         if self.ivars().terminals.borrow().len() >= 4 {
             self.print("Close a terminal before opening another (limit 4)");
             return;
@@ -789,7 +795,7 @@ fn format_language(v: &Value) -> String {
         }
         match v {
             Value::String(s) => {
-                out.push_str(s);
+                out.extend(s.chars().take(60000usize.saturating_sub(out.len())));
                 out.push('\n');
             }
             Value::Array(a) => {

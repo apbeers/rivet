@@ -71,6 +71,8 @@ pub enum AgentEvent {
 #[derive(Debug, Default)]
 pub struct LiveSession {
     pub sdk_id: Option<String>,
+    pub workspace: Option<PathBuf>,
+    pub connecting: bool,
     pub draft: String,
     pub config: AgentConfig,
     pub transcript: String,
@@ -120,6 +122,7 @@ impl LiveWorkspace {
             AgentEvent::Ready { key, id } => {
                 let s = self.sessions.entry(*key).or_default();
                 s.sdk_id = Some(id.clone());
+                s.connecting = false;
                 s.busy = false;
                 s.append("[Session connected]\n");
             }
@@ -132,6 +135,7 @@ impl LiveWorkspace {
             AgentEvent::Error { key, message } => {
                 let s = self.sessions.entry(*key).or_default();
                 s.busy = false;
+                s.connecting = false;
                 s.append(&format!("\nError: {message}\n"));
             }
             AgentEvent::Finished { key } => {
@@ -158,6 +162,8 @@ mod tests {
         let mut w = LiveWorkspace::default();
         let a = w.add();
         w.sessions.get_mut(&a).unwrap().draft = "🦀 draft".into();
+        w.sessions.get_mut(&a).unwrap().workspace = Some(PathBuf::from("project-a"));
+        w.sessions.get_mut(&a).unwrap().connecting = true;
         w.add();
         w.active = a;
         w.apply(&AgentEvent::Delta {
@@ -166,6 +172,13 @@ mod tests {
         });
         assert_eq!(w.sessions[&a].draft, "🦀 draft");
         assert_eq!(w.sessions[&a].transcript, "こんにちは");
+        assert_eq!(w.sessions[&a].workspace, Some(PathBuf::from("project-a")));
+        w.apply(&AgentEvent::Ready {
+            key: a,
+            id: "session-a".into(),
+        });
+        assert!(!w.sessions[&a].connecting);
+        assert_eq!(w.sessions[&a].workspace, Some(PathBuf::from("project-a")));
     }
     #[test]
     fn oversized_transcript_is_bounded_on_utf8_boundary() {

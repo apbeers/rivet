@@ -9,6 +9,13 @@ Implemented in the consolidated development build:
 - Services use bounded queues and resource limits. UI shutdown requests SDK, process,
   language-server, task, and PTY shutdown and polls acknowledgements without joining on
   the AppKit thread. Process errors clean up the immediate child.
+- Pending document saves prevent discard/quit races and report failures for the exact
+  document. Cache exhaustion reports an error instead of silently displaying another file.
+- Task report and log excerpts are bounded before native rendering; reports include
+  their target workspace and validation command. Late events from superseded task
+  attempts cannot authorize tools or change the retry state.
+- Session workspace identity survives navigation; connection settings are locked during
+  connection and after success, and permission prompts name the target workspace.
 - Background SDK model-list/session-ready events preserve drafts. Cached document
   selection uses stable popup keys rather than a changing LRU index.
 - `tools/package_macos.py` produces an ad-hoc-signed development `.app` and zip from a
