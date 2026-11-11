@@ -148,6 +148,8 @@ unsafe extern "system" {
     pub fn DefWindowProcW(window: Hwnd, message: u32, w: usize, l: isize) -> isize;
     pub fn DestroyWindow(window: Hwnd) -> i32;
     pub fn ShowWindow(window: Hwnd, command: i32) -> i32;
+    pub fn IsWindowVisible(window: Hwnd) -> i32;
+    pub fn RedrawWindow(window: Hwnd, rect: *const Rect, region: Handle, flags: u32) -> i32;
     pub fn UpdateWindow(window: Hwnd) -> i32;
     pub fn GetMessageW(msg: *mut Msg, window: Hwnd, min: u32, max: u32) -> i32;
     pub fn TranslateMessage(msg: *const Msg) -> i32;

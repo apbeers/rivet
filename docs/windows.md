@@ -50,6 +50,8 @@ included. Microsoft Evergreen Runtime is required; missing loader/runtime produc
 error while other tools remain available. `rivet.exe webview-version` probes availability.
 Browser count is bounded; an RSS budget, suspending background pages, comprehensive
 popup handling, and browser crash recovery are still release work.
+In-flight controller startups are also capped at five, so rapid tab creation cannot
+accumulate an unbounded native startup queue.
 
 ## Per-user packaging
 
@@ -71,3 +73,20 @@ headless/Linux environment can cross-check Rust types but cannot establish Windo
 behavior. Native CI executes a real window and checks actual source saving, subprocesses,
 LSP, ConPTY and local HTTP WebView2 navigation. Only the agent transport is a labeled fixture;
 no fixture is used by normal production launch. Inspect CI results before claiming a pass.
+
+## Native execution evidence (2026-11-11)
+
+[Run 43079767021](https://github.com/apbeers/rivet/actions/runs/43079767021)
+passed Windows native workspace and installed-package smoke tests, plus macOS and
+Linux checks. Windows exercised actual file edits/CRLF saves, pending-save guards,
+diff rejection, subprocess capture, stdio LSP, ConPTY output and shutdown, five
+WebView2 controllers and local HTTP navigation. Installation/update/launch/uninstall
+passed on the hosted account, including preserving a user-added file. This account
+is not a fresh standard-user acceptance environment. Agent events used the explicit
+test transport; real model streaming and permission invocation remain unverified.
+
+The debug runner recorded 122 session-view applications at elapsed p50 1.05 ms,
+p95 1.54 ms and p99 1.75 ms. Poll elapsed p99 was 26.97 ms; these callback timings
+do not establish input-to-display latency, UI CPU time, reference-hardware targets
+or frame rate. The two browser switch samples are insufficient for percentile
+acceptance. CI retains the raw logs and native screenshots.

@@ -326,6 +326,12 @@ pub fn save_with_replace(
     replace: impl Fn(&Path, &Path) -> io::Result<()>,
 ) -> io::Result<PathBuf> {
     use std::io::Write;
+    if snapshot.byte_len() > FILE_LIMIT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Serialized document exceeds 16 MiB (including disk line endings)",
+        ));
+    }
     let path = scoped(root, path)?;
     let read = || -> io::Result<Vec<u8>> {
         let mut bytes = Vec::new();
@@ -386,6 +392,21 @@ fn normalize_lines(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn oversized_serialized_save_preserves_original_file() {
+        let root = std::env::temp_dir().join(format!("rivet-save-limit-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("source.rs");
+        fs::write(&path, "original").unwrap();
+        let oversized = crate::editor::Buffer::new(Arc::from("x".repeat(FILE_LIMIT + 1)));
+        let error = save_with_replace(&root, &path, "original", &oversized.snapshot(), |_, _| {
+            panic!("Oversized content must never reach replacement")
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "original");
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn normalized_saves_acknowledge_crlf_bytes_for_subsequent_saves() {
         let root = std::env::temp_dir().join(format!("rivet-crlf-save-{}", std::process::id()));

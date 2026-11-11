@@ -3071,6 +3071,15 @@ impl App {
                         "PTY_WORKSPACE\r\n"
                     );
                     self.show_terminal();
+                    assert_eq!(self.mode.get(), 4);
+                    assert!(text(self.h(702)).contains("RIVET_PTY_OK"));
+                    unsafe {
+                        assert_ne!(IsWindowVisible(self.h(702)), 0);
+                        assert_ne!(IsWindowVisible(self.h(523)), 0);
+                        for d in &self.state.borrow().docs {
+                            assert_eq!(IsWindowVisible(d.view), 0);
+                        }
+                    }
                     self.capture("rivet-windows-tools.bmp").unwrap();
                     for _ in 0..5 {
                         self.action(300, 0).unwrap();
@@ -3116,6 +3125,14 @@ impl App {
     fn capture(&self, path: &str) -> Result<(), String> {
         use std::io::Write;
         unsafe {
+            // Flush invalidation after ShowWindow/WM_SETTEXT before collecting visual
+            // evidence. A synchronous test action can otherwise capture stale pixels.
+            RedrawWindow(
+                self.window.get(),
+                ptr::null(),
+                ptr::null_mut(),
+                1 | 0x80 | 0x100,
+            );
             let mut r = Rect::default();
             GetClientRect(self.window.get(), &mut r);
             let (w, h) = (r.right, r.bottom);

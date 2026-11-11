@@ -2,7 +2,7 @@
 //! Controllers stay on their creating STA. Callbacks own channels, never App pointers.
 use super::sys::*;
 use std::{
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
     ffi::c_void,
     ptr,
     sync::{
@@ -213,6 +213,7 @@ pub struct Browser {
     parent: Hwnd,
     tabs: VecDeque<Tab>,
     environment: Option<Com>,
+    pending: BTreeSet<u64>,
     creating: bool,
     tx: SyncSender<Event>,
     rx: Receiver<Event>,
@@ -231,6 +232,7 @@ impl Browser {
             parent,
             tabs: VecDeque::new(),
             environment: None,
+            pending: BTreeSet::new(),
             creating: false,
             tx,
             rx,
@@ -249,6 +251,9 @@ impl Browser {
         ids
     }
     pub fn create(&mut self) -> Result<u64, String> {
+        if self.pending.len() >= 5 {
+            return Err("Browser startup budget reached; wait for pending tabs".into());
+        }
         if self.tabs.len() >= 5 {
             self.tabs.pop_front();
         }
@@ -312,7 +317,7 @@ impl Browser {
         self.layout(self.bounds, self.visible);
         Ok(id)
     }
-    fn controller(&self, id: u64) -> Result<(), String> {
+    fn controller(&mut self, id: u64) -> Result<(), String> {
         let env = self
             .environment
             .as_ref()
@@ -329,6 +334,7 @@ impl Browser {
         if result < 0 {
             Err(format!("WebView2 controller failed ({result:#x})"))
         } else {
+            self.pending.insert(id);
             Ok(())
         }
     }
@@ -352,6 +358,7 @@ impl Browser {
                     self.error = Some(e);
                 }
                 Event::Controller(id, Ok(controller)) => {
+                    self.pending.remove(&id);
                     self.layout_dirty = true;
                     let mut web = ptr::null_mut();
                     let hr = unsafe {
@@ -380,7 +387,10 @@ impl Browser {
                         drop(tab);
                     }
                 }
-                Event::Controller(_, Err(e)) => self.error = Some(e),
+                Event::Controller(id, Err(e)) => {
+                    self.pending.remove(&id);
+                    self.error = Some(e);
+                }
             }
         }
         self.layout(self.bounds, self.visible);

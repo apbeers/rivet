@@ -25,6 +25,11 @@ pub struct Snapshot {
     pieces: Vec<Piece>,
 }
 impl Snapshot {
+    pub fn byte_len(&self) -> usize {
+        self.pieces
+            .iter()
+            .fold(0usize, |n, p| n.saturating_add(p.range.len()))
+    }
     pub fn text(&self) -> String {
         let mut text = String::new();
         for p in &self.pieces {
