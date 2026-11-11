@@ -1,0 +1,10 @@
+[package]
+name = "rivet-copilot"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+github-copilot-sdk = "=1.0.32-preview.1"
+tokio = { version = "1", features = ["rt", "time", "macros"] }
