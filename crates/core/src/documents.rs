@@ -173,7 +173,7 @@ impl FileWorker {
                             snapshot,
                             revision,
                         } => Ok(match save_checked(&root, &path, &expected, &snapshot) {
-                            Ok(path) => FileEvent::Saved {
+                            Ok(_) => FileEvent::Saved {
                                 path,
                                 text: Arc::from(snapshot.text()),
                                 revision,
@@ -326,7 +326,15 @@ mod tests {
     fn save_worker_reports_the_exact_document_and_remains_usable() {
         let root = std::env::temp_dir().join(format!("rivet-save-worker-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("file");
+        let actual = root.join("actual");
+        std::fs::create_dir_all(&actual).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&actual, root.join("alias")).unwrap();
+        let path = if cfg!(unix) {
+            root.join("alias/file")
+        } else {
+            actual.join("file")
+        };
         std::fs::write(&path, "original").unwrap();
         let worker = FileWorker::spawn().unwrap();
         let mut buffer = crate::editor::Buffer::new(Arc::from("original"));
@@ -353,9 +361,7 @@ mod tests {
                 revision: 7,
             })
             .unwrap();
-        assert!(
-            matches!(receive(),FileEvent::Saved{path:p,revision:7,..} if p==path.canonicalize().unwrap())
-        );
+        assert!(matches!(receive(),FileEvent::Saved{path:p,revision:7,..} if p==path));
         worker
             .submit(FileCommand::Save {
                 root: root.clone(),

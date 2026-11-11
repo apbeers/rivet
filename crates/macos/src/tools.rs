@@ -771,6 +771,19 @@ impl Tools {
             b"printf '\\122\\111\\126\\105\\124\\137\\120\\124\\131\\137\\117\\113\\n'\r".to_vec(),
         );
     }
+    pub fn smoke_state(&self) -> String {
+        format!(
+            "process={} initialized={} hover={} pty={}",
+            self.ivars().smoke_process.get(),
+            self.ivars().initialized.get(),
+            self.ivars().smoke_hover.get(),
+            self.ivars()
+                .terminals
+                .borrow()
+                .iter()
+                .any(|t| t.screen.render().contains("RIVET_PTY_OK"))
+        )
+    }
     pub fn smoke_complete(&self) -> bool {
         if self.ivars().initialized.get() && !self.ivars().smoke_requested.replace(true) {
             self.language_request(0);

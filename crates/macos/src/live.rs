@@ -210,7 +210,9 @@ impl Workspace {
             return;
         };
         self.ivars().smoke_tick.set(Some(tick + 1));
-        eprintln!("RIVET_LIVE_SMOKE_STEP {tick}");
+        if tick < 32 || tick % 60 == 0 {
+            eprintln!("RIVET_LIVE_SMOKE_STEP {tick}");
+        }
         let c = self.controls();
         let dispatch = |control: &NSControl| {
             // SAFETY: controls below have registered target/action pairs.
@@ -275,6 +277,7 @@ impl Workspace {
                         .as_nanos()
                 ));
                 std::fs::create_dir(&root).unwrap();
+                let root = root.canonicalize().unwrap();
                 let path = root.join("fixture.rs");
                 std::fs::write(&path, "Native document fixture 🦀").unwrap();
                 c.workspace
@@ -391,6 +394,15 @@ impl Workspace {
                     self.ivars().smoke_tick.set(None);
                     NSApplication::sharedApplication(self.mtm()).terminate(None);
                 } else {
+                    if tick % 60 == 0 {
+                        eprintln!(
+                            "smoke={} pending_saves={:?} dirty={} status={}",
+                            self.ivars().tools.get().unwrap().smoke_state(),
+                            self.ivars().pending_saves.borrow(),
+                            self.ivars().documents.borrow().any_dirty(),
+                            self.controls().status.stringValue()
+                        );
+                    }
                     assert!(tick < 3000, "Development tools smoke did not complete");
                 }
             }
