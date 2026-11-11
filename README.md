@@ -5,6 +5,26 @@ A Rust-native workspace for AI agents, built for responsiveness and developer co
 Rivet will use native macOS and Windows interfaces over a shared Rust core. macOS comes
 first; a future Linux frontend remains possible. The main UI will not be a web application.
 
+## Installation requirement
+
+Released versions must support installation and normal operation without administrator
+rights on macOS and Windows. Installation, updates, and uninstallation must work within
+the current user's account:
+
+- macOS: support installation in `~/Applications`.
+- Windows: provide a per-user installer under `%LocalAppData%`.
+- Keep bundled Copilot runtime files, settings, caches, sessions, and update staging in
+  user-writable locations. Required runtime prerequisites must have a supported path
+  that does not require elevation.
+- Normal use must not require a privileged service, system-wide PATH changes, or running
+  Rivet or its agents as administrator. Separately requested privileged development
+  operations require explicit, operation-specific approval.
+
+Release acceptance must verify install, launch, normal use, update, and uninstall on
+fresh standard-user accounts on both platforms, without administrator credentials.
+Optional installation for all users may require elevation. Installers and this acceptance
+verification are future release work; they are not implemented by the current prototype.
+
 ## Current stage
 
 Stage 2 adds a native **macOS UI prototype** with 20 persistent mock sessions,
