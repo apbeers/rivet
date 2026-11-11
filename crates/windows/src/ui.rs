@@ -2175,6 +2175,12 @@ fn color(view: Hwnd, start: usize, end: usize, rgb: u32) {
 }
 impl App {
     fn highlight(&self) {
+        // WM_SETREDRAW(TRUE) restores WS_VISIBLE. Never highlight a hidden editor:
+        // otherwise background highlighting can cover the Tools or Browser view.
+        // Keep its dirty flag until the document is visible again.
+        if self.mode.get() != 2 {
+            return;
+        }
         let data = {
             let mut s = self.state.borrow_mut();
             active_doc_mut(&mut s).filter(|d| d.highlight).map(|d| {
@@ -3091,7 +3097,9 @@ impl App {
                 }
             }
             8 => {
-                if self.browser.borrow().title().as_deref() == Some("Rivet browser fixture") {
+                if self.browser.borrow().all_ready()
+                    && self.browser.borrow().title().as_deref() == Some("Rivet browser fixture")
+                {
                     let identity = self.browser.borrow().identity().unwrap();
                     self.smoke.borrow_mut().as_mut().unwrap().browser_identity = Some(identity);
                     send(self.h(301), 0x14e, 0, 0);

@@ -488,6 +488,13 @@ impl Browser {
             .as_ref()
             .map(|c| c.0 as usize)
     }
+    pub fn all_ready(&self) -> bool {
+        !self.tabs.is_empty()
+            && self
+                .tabs
+                .iter()
+                .all(|t| t.controller.is_some() && t.web.is_some())
+    }
     pub fn shutdown(&mut self) {
         self.tabs.clear();
         self.environment.take();
