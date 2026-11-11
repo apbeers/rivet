@@ -1,5 +1,5 @@
 //! Native production workspace. The separate appkit module retains the mock benchmark.
-use super::{browser::Browsers, documents::Documents};
+use super::{browser::Browsers, documents::Documents, review::Review};
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
     rc::Retained, runtime::ProtocolObject, sel,
@@ -52,6 +52,14 @@ struct Controls {
     cached: Retained<NSPopUpButton>,
     path: Retained<NSTextField>,
     open_path: Retained<NSButton>,
+    save: Retained<NSButton>,
+    undo: Retained<NSButton>,
+    redo: Retained<NSButton>,
+    diff: Retained<NSButton>,
+    side: Retained<NSButton>,
+    revert: Retained<NSButton>,
+    find: Retained<NSButton>,
+    query: Retained<NSTextField>,
 }
 struct State {
     workspace: RefCell<LiveWorkspace>,
@@ -63,6 +71,8 @@ struct State {
     smoke_tick: Cell<Option<u16>>,
     closing: Cell<bool>,
     mode: Cell<u8>,
+    review: OnceCell<RefCell<Review>>,
+    discard_pending: RefCell<Option<(PathBuf, u64)>>,
     browsers: RefCell<Browsers>,
     documents: RefCell<Documents>,
     files_worker: FileWorker,
@@ -110,6 +120,17 @@ define_class!(
         #[unsafe(method(selectFile:))] fn select_file(&self,sender:&NSPopUpButton){let item=self.ivars().entries.borrow().get(sender.indexOfSelectedItem() as usize).cloned();if let Some((path,folder))=item{self.file_job(if folder{FileCommand::List{root:self.root_path(),path}}else{FileCommand::Read{root:self.root_path(),path}});}}
         #[unsafe(method(openPath:))] fn open_path(&self,_sender:&NSButton){self.file_job(FileCommand::Read{root:self.root_path(),path:PathBuf::from(self.controls().path.stringValue().to_string())});}
         #[unsafe(method(selectCached:))] fn select_cached(&self,sender:&NSPopUpButton){let path=self.ivars().documents.borrow().paths().get(sender.indexOfSelectedItem() as usize).cloned();if let Some(path)=path{self.ivars().documents.borrow_mut().select_cached(&path,self.content_frame());self.apply_mode();}}
+        #[unsafe(method(saveFile:))] fn save_file(&self,_sender:&NSButton){let docs=self.ivars().documents.borrow();if let (Some(path),Some(editor))=(docs.active.clone(),docs.active_editor()){self.file_job(FileCommand::Save{root:self.root_path(),path,expected:editor.base(),snapshot:editor.snapshot(),revision:editor.revision()});self.status("Saving in background…");}}
+        #[unsafe(method(undoFile:))] fn undo_file(&self,_sender:&NSButton){if let Some(editor)=self.ivars().documents.borrow().active_editor(){editor.undo_edit();}}
+        #[unsafe(method(redoFile:))] fn redo_file(&self,_sender:&NSButton){if let Some(editor)=self.ivars().documents.borrow().active_editor(){editor.redo_edit();}}
+        #[unsafe(method(findText:))] fn find_text(&self,_sender:&NSButton){if let Some(editor)=self.ivars().documents.borrow().active_editor() && !editor.find(&self.controls().query.stringValue().to_string()){self.status("Text not found");}}
+        #[unsafe(method(reviewChanges:))] fn review_changes(&self,_sender:&NSButton){if let Some(editor)=self.ivars().documents.borrow().active_editor(){self.file_job(FileCommand::Diff{before:editor.base(),snapshot:editor.snapshot()});}}
+        #[unsafe(method(toggleReview:))] fn toggle_review(&self,_sender:&NSButton){if let Some(review)=self.ivars().review.get(){review.borrow_mut().toggle();self.apply_mode();}}
+        #[unsafe(method(revertUnsaved:))] fn revert_unsaved(&self,_sender:&NSButton){
+            let docs=self.ivars().documents.borrow();let (Some(path),Some(editor))=(docs.active.clone(),docs.active_editor())else{return;};let identity=(path.clone(),editor.revision());
+            let confirmed=self.ivars().discard_pending.borrow().as_ref()==Some(&identity);if !confirmed{*self.ivars().discard_pending.borrow_mut()=Some(identity);self.controls().revert.setTitle(&NSString::from_str("Confirm discard"));self.status(&format!("Confirm rejection of unsaved edits in {}",path.display()));return;}
+            self.ivars().discard_pending.borrow_mut().take();self.controls().revert.setTitle(&NSString::from_str("Reject unsaved"));editor.revert();self.status("Unsaved edits rejected; disk unchanged");
+        }
         #[unsafe(method(tick:))] fn tick(&self,_timer:&NSTimer){
             for _ in 0..64 {
                 let event=self.ivars().host.borrow_mut().try_event();let Some(event)=event else {break;};
@@ -136,10 +157,15 @@ define_class!(
     unsafe impl NSApplicationDelegate for Workspace {
         #[unsafe(method(applicationShouldTerminate:))]
         fn should_terminate(&self,_app:&NSApplication)->NSApplicationTerminateReply {
+            if self.ivars().documents.borrow().any_dirty(){self.status("Save or explicitly reject unsaved documents before quitting");return NSApplicationTerminateReply::TerminateCancel;}
             self.ivars().closing.set(true); self.ivars().host.borrow().shutdown(); NSApplicationTerminateReply::TerminateLater
         }
     }
     unsafe impl NSWindowDelegate for Workspace{
+        #[unsafe(method(windowShouldClose:))] fn should_close(&self,_window:&NSWindow)->bool{
+            let dirty=self.ivars().documents.borrow().any_dirty();if dirty{self.status("Save or explicitly reject unsaved documents before closing");}!dirty
+        }
+
         #[unsafe(method(windowWillClose:))] fn closed(&self,_notification:&NSNotification){self.ivars().permissions.borrow_mut().clear();if !self.ivars().closing.get(){NSApplication::sharedApplication(self.mtm()).terminate(None);}}
     }
 );
@@ -208,6 +234,7 @@ impl Workspace {
                     self,
                     path.clone(),
                     std::sync::Arc::from("Native document fixture 🦀"),
+                    None,
                     self.content_frame(),
                     self.mtm(),
                 );
@@ -229,6 +256,32 @@ impl Workspace {
                         .select_cached(&path, self.content_frame())
                 );
             }
+            21 => {
+                let docs = self.ivars().documents.borrow();
+                let editor = docs.active_editor().unwrap();
+                let inserted = NSString::from_str("// edit fixture\n");
+                let range = objc2_foundation::NSRange::new(0, 0);
+                assert!(editor.shouldChangeTextInRange_replacementString(range, Some(&inserted)));
+                unsafe {
+                    editor
+                        .textStorage()
+                        .unwrap()
+                        .replaceCharactersInRange_withString(range, &inserted);
+                }
+                editor.didChangeText();
+                assert!(editor.snapshot().text().starts_with("// edit fixture"));
+                editor.undo_edit();
+                assert!(!editor.snapshot().text().starts_with("// edit fixture"));
+                editor.redo_edit();
+                assert!(editor.find("fixture"));
+            }
+            22 => dispatch(&c.diff),
+            28 => {
+                assert_eq!(self.ivars().mode.get(), 3);
+                dispatch(&c.revert);
+                dispatch(&c.revert);
+                assert!(!self.ivars().documents.borrow().any_dirty());
+            }
             30 => {
                 println!("RIVET_LIVE_UI_SMOKE_PASS (test backend; no model/network verification)");
                 NSApplication::sharedApplication(self.mtm()).terminate(None);
@@ -241,11 +294,32 @@ impl Workspace {
     }
     fn content_frame(&self) -> NSRect {
         let z = self.bounds().size;
-        rect(220.0, 165.0, z.width - 232.0, z.height - 210.0)
+        let top = if self.ivars().mode.get() >= 2 {
+            205.0
+        } else {
+            165.0
+        };
+        rect(220.0, top, z.width - 232.0, z.height - top - 45.0)
     }
     fn apply_mode(&self) {
         let c = self.controls();
         let mode = self.ivars().mode.get();
+        for v in [
+            &*c.save as &NSView,
+            &*c.undo,
+            &*c.redo,
+            &*c.diff,
+            &*c.side,
+            &*c.revert,
+            &*c.find,
+            &*c.query,
+        ] {
+            v.setHidden(mode < 2);
+        }
+        if let Some(review) = self.ivars().review.get() {
+            review.borrow().layout(self.content_frame(), mode == 3);
+        }
+
         for v in [
             &*c.model as &NSView,
             &*c.instructions,
@@ -300,6 +374,20 @@ impl Workspace {
                 break;
             };
             match event {
+                FileEvent::Diff(diff) => {
+                    self.ivars().review.get().unwrap().borrow_mut().show(diff);
+                    self.ivars().mode.set(3);
+                    self.apply_mode();
+                    self.status("Unsaved edits only · accept saves after conflict checks; reject leaves disk untouched");
+                }
+                FileEvent::Saved {
+                    path,
+                    text,
+                    revision,
+                } => {
+                    self.ivars().documents.borrow().saved(&path, text, revision);
+                    self.status("File saved; any newer edits remain unsaved");
+                }
                 FileEvent::Error(e) => self.status(&e),
                 FileEvent::Entries { path, mut entries } => {
                     let total = entries.len();
@@ -317,11 +405,12 @@ impl Workspace {
                     *self.ivars().entries.borrow_mut() = entries;
                     self.status(&format!("{} · showing up to 200 of {total} entries; Open path supports any workspace file",path.display()));
                 }
-                FileEvent::Loaded { path, text } => {
+                FileEvent::Loaded { path, text, buffer } => {
                     self.ivars().documents.borrow_mut().show(
                         self,
                         path.clone(),
                         text,
+                        Some(buffer),
                         self.content_frame(),
                         self.mtm(),
                     );
@@ -391,6 +480,8 @@ impl Workspace {
             timer: OnceCell::new(),
             closing: Cell::new(false),
             mode: Cell::new(0),
+            review: OnceCell::new(),
+            discard_pending: RefCell::new(None),
             browsers: RefCell::new(Browsers::new()),
             documents: RefCell::new(Documents::new()),
             files_worker: FileWorker::spawn().map_err(|e| e.to_string())?,
@@ -482,7 +573,10 @@ impl Workspace {
             self.addSubview(view);
         }
         let mut modes = Vec::new();
-        for (id, title) in ["Agents", "Browser", "Documents"].iter().enumerate() {
+        for (id, title) in ["Agents", "Browser", "Documents", "Review"]
+            .iter()
+            .enumerate()
+        {
             let b = self.button(title, sel!(showMode:));
             b.setTag(id as isize);
             self.addSubview(&b);
@@ -538,7 +632,40 @@ impl Workspace {
         ] {
             self.addSubview(v);
         }
+        let save = self.button("Accept + Save", sel!(saveFile:));
+        let undo = self.button("Undo", sel!(undoFile:));
+        let redo = self.button("Redo", sel!(redoFile:));
+        let diff = self.button("Unsaved diff", sel!(reviewChanges:));
+        let side = self.button("Inline / Split", sel!(toggleReview:));
+        let revert = self.button("Reject unsaved", sel!(revertUnsaved:));
+        let find = self.button("Find", sel!(findText:));
+        let query = NSTextField::new(mtm);
+        query.setPlaceholderString(Some(&NSString::from_str("Find in file")));
+        for v in [
+            &*save as &NSView,
+            &*undo,
+            &*redo,
+            &*diff,
+            &*side,
+            &*revert,
+            &*find,
+            &*query,
+        ] {
+            self.addSubview(v);
+        }
+        let _ = self
+            .ivars()
+            .review
+            .set(RefCell::new(Review::new(self, mtm)));
         let _ = self.ivars().controls.set(Controls {
+            save,
+            undo,
+            redo,
+            diff,
+            side,
+            revert,
+            find,
+            query,
             modes,
             browser_tabs,
             browser_new,
@@ -623,6 +750,20 @@ impl Workspace {
             .documents
             .borrow()
             .layout(self.content_frame(), self.ivars().mode.get() == 2);
+        c.save.setFrame(rect(220.0, 165.0, 105.0, 30.0));
+        c.undo.setFrame(rect(330.0, 165.0, 55.0, 30.0));
+        c.redo.setFrame(rect(390.0, 165.0, 55.0, 30.0));
+        c.diff.setFrame(rect(450.0, 165.0, 95.0, 30.0));
+        c.side.setFrame(rect(550.0, 165.0, 100.0, 30.0));
+        c.revert.setFrame(rect(655.0, 165.0, 115.0, 30.0));
+        c.query
+            .setFrame(rect(775.0, 165.0, (w - 870.0).max(20.0), 28.0));
+        c.find.setFrame(rect(w - 90.0, 165.0, 78.0, 30.0));
+        if let Some(review) = self.ivars().review.get() {
+            review
+                .borrow()
+                .layout(self.content_frame(), self.ivars().mode.get() == 3);
+        }
     }
     fn save_draft(&self) {
         let c = self.controls();

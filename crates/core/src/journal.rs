@@ -26,17 +26,35 @@ fn invalid(message: &str) -> io::Error {
 }
 impl Journal {
     pub fn open(path: &Path) -> io::Result<(Self, Records)> {
+        let mut created_parents = Vec::new();
         if let Some(parent) = path.parent() {
+            for ancestor in parent.ancestors() {
+                if ancestor.exists() {
+                    created_parents.push(ancestor.to_path_buf());
+                    break;
+                }
+                created_parents.push(ancestor.to_path_buf());
+            }
             fs::create_dir_all(parent)?;
         }
         let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
+        options.read(true).append(true).create(true).truncate(false);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
         let mut file = options.open(path)?;
+        file.try_lock()
+            .map_err(|e| io::Error::other(format!("Journal lock unavailable: {e}")))?;
+        #[cfg(unix)]
+        {
+            for parent in &created_parents {
+                File::open(parent)?.sync_all()?;
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = created_parents;
         let mut records = Vec::new();
         let mut sequence = 0;
         let mut valid = 0;
@@ -92,7 +110,7 @@ impl Journal {
                 return Err(invalid("journal replay budget exceeded"));
             }
         }
-        let file = OpenOptions::new().append(true).open(path)?;
+
         Ok((Self { file, sequence }, records))
     }
     /// Success means data reached durable storage. Caller must use a worker.

@@ -21,3 +21,9 @@ pub fn run_live_smoke() -> Result<(), String> {
 mod browser;
 #[cfg(target_os = "macos")]
 mod documents;
+
+#[cfg(target_os = "macos")]
+mod editor;
+
+#[cfg(target_os = "macos")]
+mod review;

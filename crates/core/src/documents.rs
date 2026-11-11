@@ -15,11 +15,34 @@ const FILE_LIMIT: usize = 16 * 1024 * 1024;
 const CACHE_LIMIT: usize = 32 * 1024 * 1024;
 #[derive(Debug)]
 pub enum FileCommand {
-    List { root: PathBuf, path: PathBuf },
-    Read { root: PathBuf, path: PathBuf },
+    Diff {
+        before: Arc<str>,
+        snapshot: crate::editor::Snapshot,
+    },
+    Save {
+        root: PathBuf,
+        path: PathBuf,
+        expected: Arc<str>,
+        snapshot: crate::editor::Snapshot,
+        revision: u64,
+    },
+    List {
+        root: PathBuf,
+        path: PathBuf,
+    },
+    Read {
+        root: PathBuf,
+        path: PathBuf,
+    },
 }
 #[derive(Debug)]
 pub enum FileEvent {
+    Diff(crate::diff::Diff),
+    Saved {
+        path: PathBuf,
+        text: Arc<str>,
+        revision: u64,
+    },
     Entries {
         path: PathBuf,
         entries: Vec<(PathBuf, bool)>,
@@ -27,6 +50,7 @@ pub enum FileEvent {
     Loaded {
         path: PathBuf,
         text: Arc<str>,
+        buffer: crate::editor::Buffer,
     },
     Error(String),
 }
@@ -128,6 +152,22 @@ impl FileWorker {
                         Err(_) => break,
                     };
                     let result = match c {
+                        FileCommand::Diff { before, snapshot } => Ok(FileEvent::Diff(
+                            crate::diff::compare(&before, &snapshot.text()),
+                        )),
+                        FileCommand::Save {
+                            root,
+                            path,
+                            expected,
+                            snapshot,
+                            revision,
+                        } => save_checked(&root, &path, &expected, &snapshot).map(|path| {
+                            FileEvent::Saved {
+                                path,
+                                text: Arc::from(snapshot.text()),
+                                revision,
+                            }
+                        }),
                         FileCommand::List { root, path } => scoped(&root, &path).and_then(|path| {
                             let mut entries = Vec::new();
                             for entry in fs::read_dir(&path)?.take(10_000) {
@@ -137,9 +177,15 @@ impl FileWorker {
                             entries.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
                             Ok(FileEvent::Entries { path, entries })
                         }),
-                        FileCommand::Read { root, path } => cache
-                            .read(&root, &path)
-                            .map(|(path, text)| FileEvent::Loaded { path, text }),
+                        FileCommand::Read { root, path } => {
+                            cache
+                                .read(&root, &path)
+                                .map(|(path, text)| FileEvent::Loaded {
+                                    path,
+                                    buffer: crate::editor::Buffer::new(text.clone()),
+                                    text,
+                                })
+                        }
                     }
                     .unwrap_or_else(|e| FileEvent::Error(e.to_string()));
                     // No UI blocking. Backpressure stops this one worker, with cancellation polling.
@@ -179,6 +225,70 @@ impl Drop for FileWorker {
         self.stop.store(true, Ordering::Relaxed);
     }
 }
+fn save_checked(
+    root: &Path,
+    path: &Path,
+    expected: &str,
+    snapshot: &crate::editor::Snapshot,
+) -> io::Result<PathBuf> {
+    #[cfg(not(windows))]
+    use std::io::Write;
+    let _ = snapshot;
+    let path = scoped(root, path)?;
+    let read_current = || -> io::Result<Vec<u8>> {
+        let mut data = Vec::new();
+        fs::File::open(&path)?
+            .take(FILE_LIMIT as u64 + 1)
+            .read_to_end(&mut data)?;
+        if data.len() > FILE_LIMIT {
+            return Err(io::Error::other("External file exceeds save budget"));
+        }
+        Ok(data)
+    };
+    let current = read_current()?;
+    if current != expected.as_bytes() {
+        return Err(io::Error::other(
+            "File changed outside Rivet; reload or reconcile before saving",
+        ));
+    }
+    #[cfg(windows)]
+    return Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Windows atomic replacement backend is not implemented",
+    ));
+    #[cfg(not(windows))]
+    {
+        use std::fs::OpenOptions;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let temp = path.with_file_name(format!(".rivet-save-{}-{nonce}", std::process::id()));
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)?;
+            file.set_permissions(fs::metadata(&path)?.permissions())?;
+            snapshot.write_to(&mut file)?;
+            file.flush()?;
+            file.sync_all()?;
+            if read_current()? != current {
+                return Err(io::Error::other(
+                    "File changed during save; original preserved",
+                ));
+            }
+            fs::rename(&temp, &path)?;
+            fs::File::open(path.parent().unwrap())?.sync_all()?;
+            Ok(path.clone())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(temp);
+        }
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +311,35 @@ mod tests {
         {
             std::os::unix::fs::symlink(root.parent().unwrap(), root.join("escape")).unwrap();
             assert!(scoped(&root, &root.join("escape")).is_err());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    #[cfg(not(windows))]
+    fn atomic_save_refuses_external_edits_and_preserves_file_mode() {
+        let root = std::env::temp_dir().join(format!("rivet-save-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("source.rs");
+        fs::write(&path, "original").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        }
+        let mut b = crate::editor::Buffer::new(Arc::from("original"));
+        b.replace(0..8, "updated 🦀").unwrap();
+        save_checked(&root, &path, "original", &b.snapshot()).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "updated 🦀");
+        assert!(save_checked(&root, &path, "original", &b.snapshot()).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "updated 🦀");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o640
+            );
         }
         fs::remove_dir_all(root).unwrap();
     }

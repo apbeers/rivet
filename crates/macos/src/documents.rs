@@ -1,6 +1,8 @@
+use super::editor::EditorView;
 use objc2::{MainThreadMarker, MainThreadOnly, rc::Retained};
-use objc2_app_kit::{NSAutoresizingMaskOptions, NSScrollView, NSTextView, NSView};
-use objc2_foundation::{NSRect, NSSize, NSString};
+use objc2_app_kit::{NSScrollView, NSView};
+use objc2_foundation::{NSRect, NSString};
+use rivet_core::editor::Buffer;
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
@@ -10,7 +12,7 @@ struct Tab {
     path: PathBuf,
     text: Arc<str>,
     scroll: Retained<NSScrollView>,
-    view: Retained<NSTextView>,
+    view: Retained<EditorView>,
 }
 pub struct Documents {
     tabs: VecDeque<Tab>,
@@ -30,12 +32,13 @@ impl Documents {
         root: &NSView,
         path: PathBuf,
         text: Arc<str>,
+        buffer: Option<Buffer>,
         frame: NSRect,
         mtm: MainThreadMarker,
     ) {
         if let Some(i) = self.tabs.iter().position(|t| t.path == path) {
             let tab = self.tabs.remove(i).unwrap();
-            if !Arc::ptr_eq(&tab.text, &text) {
+            if !Arc::ptr_eq(&tab.text, &text) && !tab.view.is_dirty() {
                 self.bytes -= tab.text.len();
                 tab.scroll.removeFromSuperview();
             } else {
@@ -45,30 +48,34 @@ impl Documents {
                 return;
             }
         }
+        if self.tabs.iter().filter(|t| t.view.is_dirty()).count() >= 20
+            || self
+                .tabs
+                .iter()
+                .filter(|t| t.view.is_dirty())
+                .map(|t| t.text.len())
+                .sum::<usize>()
+                + text.len()
+                > 32 * 1024 * 1024
+        {
+            return;
+        }
         while self.tabs.len() >= 20 || self.bytes + text.len() > 32 * 1024 * 1024 {
-            if let Some(old) = self.tabs.pop_front() {
+            if let Some(index) = self.tabs.iter().position(|t| !t.view.is_dirty()) {
+                let old = self.tabs.remove(index).unwrap();
                 self.bytes -= old.text.len();
                 old.scroll.removeFromSuperview();
             } else {
-                break;
+                return;
             }
         }
         let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), frame);
         scroll.setHasVerticalScroller(true);
-        let view = NSTextView::initWithFrame(
-            NSTextView::alloc(mtm),
-            NSRect::new(Default::default(), scroll.contentSize()),
+        let view = EditorView::new(
+            mtm,
+            text.clone(),
+            buffer.unwrap_or_else(|| Buffer::new(text.clone())),
         );
-        view.setEditable(false);
-        view.setVerticallyResizable(true);
-        view.setHorizontallyResizable(false);
-        view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
-        view.setMaxSize(NSSize::new(f64::MAX, f64::MAX));
-        // SAFETY: native text container remains owned by this text view on the main thread.
-        if let Some(container) = unsafe { view.textContainer() } {
-            container.setWidthTracksTextView(true);
-        }
-        view.setString(&NSString::from_str(&text));
         scroll.setDocumentView(Some(&view));
         root.addSubview(&scroll);
         self.bytes += text.len();
@@ -96,6 +103,20 @@ impl Documents {
             tab.scroll.setFrame(frame);
             tab.scroll
                 .setHidden(!visible || self.active.as_ref() != Some(&tab.path));
+        }
+    }
+    pub fn any_dirty(&self) -> bool {
+        self.tabs.iter().any(|t| t.view.is_dirty())
+    }
+    pub fn active_editor(&self) -> Option<&EditorView> {
+        self.tabs
+            .iter()
+            .find(|t| Some(&t.path) == self.active.as_ref())
+            .map(|t| &*t.view)
+    }
+    pub fn saved(&self, path: &Path, text: Arc<str>, revision: u64) {
+        if let Some(tab) = self.tabs.iter().find(|t| t.path == path) {
+            tab.view.mark_saved(text, revision);
         }
     }
     pub fn active_text(&self) -> Option<Retained<NSString>> {

@@ -120,6 +120,18 @@ fn main() -> std::process::ExitCode {
         }
     }
 }
+#[cfg(target_os = "macos")]
+fn launch_ui(smoke: bool) -> Result<(), String> {
+    let backend = if smoke {
+        None
+    } else {
+        Some(Box::new(rivet_copilot::AgentHost::spawn(
+            rivet_core::journal::user_data_dir().map_err(|e| e.to_string())?,
+        )?) as Box<dyn rivet_core::AgentBackend>)
+    };
+    rivet_macos::run(smoke, backend)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,16 +165,4 @@ mod tests {
         assert_eq!(o.resume.as_deref(), Some("abc"));
         assert_eq!(o.cancel_after, Some(Duration::from_millis(100)));
     }
-}
-
-#[cfg(target_os = "macos")]
-fn launch_ui(smoke: bool) -> Result<(), String> {
-    let backend = if smoke {
-        None
-    } else {
-        Some(Box::new(rivet_copilot::AgentHost::spawn(
-            rivet_core::journal::user_data_dir().map_err(|e| e.to_string())?,
-        )?) as Box<dyn rivet_core::AgentBackend>)
-    };
-    rivet_macos::run(smoke, backend)
 }
