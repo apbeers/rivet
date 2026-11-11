@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 rivet-copilot = { path = "../copilot" }
 
+rivet-core = { path = "../core" }
 rivet-prototype = { path = "../prototype" }
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -13,7 +13,7 @@ def check(metadata):
         for dep in package["dependencies"]:
             if dep["source"] is None and dep["name"] in paths:
                 continue
-            if package["name"] == "rivet-copilot" and dep["name"] in {"github-copilot-sdk", "tokio"}:
+            if package["name"] == "rivet-copilot" and dep["name"] in {"github-copilot-sdk", "tokio", "async-trait"}:
                 continue
             if (package["name"] == "rivet-macos"
                     and dep["name"] in {"objc2", "objc2-foundation", "objc2-app-kit"}

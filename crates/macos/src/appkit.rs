@@ -597,6 +597,17 @@ pub fn run(smoke: bool) -> Result<(), String> {
     window.setContentMinSize(NSSize::new(820.0, 560.0));
     window.setContentView(Some(&shell));
     window.setDelegate(Some(ProtocolObject::from_ref(&*shell)));
+    install_menus(&app, mtm);
+    window.center();
+    window.makeKeyAndOrderFront(None);
+    app.activate();
+    shell.start_timer();
+    app.run();
+    shell.shutdown();
+    Ok(())
+}
+
+pub(crate) fn install_menus(app: &NSApplication, mtm: MainThreadMarker) {
     let menu = NSMenu::new(mtm);
     let app_item = NSMenuItem::new(mtm);
     menu.addItem(&app_item);
@@ -636,11 +647,4 @@ pub fn run(smoke: bool) -> Result<(), String> {
     edit_item.setSubmenu(Some(&edit_menu));
     menu.addItem(&edit_item);
     app.setMainMenu(Some(&menu));
-    window.center();
-    window.makeKeyAndOrderFront(None);
-    app.activate();
-    shell.start_timer();
-    app.run();
-    shell.shutdown();
-    Ok(())
 }

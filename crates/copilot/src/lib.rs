@@ -188,6 +188,9 @@ async fn run(
     result.and(disconnect)
 }
 
+mod host;
+pub use host::AgentHost;
+
 #[cfg(test)]
 mod tests {
     use super::*;

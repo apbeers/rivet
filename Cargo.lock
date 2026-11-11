@@ -1208,6 +1208,7 @@ name = "rivet"
 version = "0.1.0"
 dependencies = [
  "rivet-copilot",
+ "rivet-core",
  "rivet-macos",
  "rivet-prototype",
 ]
@@ -1216,9 +1217,15 @@ dependencies = [
 name = "rivet-copilot"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "github-copilot-sdk",
+ "rivet-core",
  "tokio",
 ]
+
+[[package]]
+name = "rivet-core"
+version = "0.1.0"
 
 [[package]]
 name = "rivet-macos"
@@ -1227,6 +1234,7 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "rivet-core",
  "rivet-prototype",
 ]
 

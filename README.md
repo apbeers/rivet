@@ -27,13 +27,15 @@ verification are future release work; they are not implemented by the current pr
 
 ## Current stage
 
-Stage 2 adds a native **macOS UI prototype** with 20 persistent mock sessions,
-100,000-event virtualized conversations, cached settings, draft input, and background
-mock activity. Windows and Linux currently provide the Stage 1 CLI and portable benchmarks.
-There is no editor, browser, orchestration, or real Copilot integration in the UI yet.
+Stage 3 adds the native **macOS Copilot workspace**: real session create/resume,
+chat streaming, cancellation, model choices, instructions, permission prompts, and
+saved session references. Run `cargo run -p rivet -- ui` (or no arguments on macOS).
+The earlier mock performance prototype remains available through `ui --smoke`.
+Windows and Linux currently provide CLI probes and portable tests.
 
-On macOS, run `cargo run -p rivet -- ui` (or run with no arguments). See
-[Stage 2 implementation and native verification](docs/stage-2.md).
+See [Stage 3 implementation and acceptance gates](docs/stage-3.md) and
+[Stage 2 performance evidence](docs/stage-2.md). Real model access remains an
+external verification gate; a successful auth-status RPC alone is not sufficient.
 
 Requirements: Rust (pinned by `rust-toolchain.toml`), a native linker, and Git for repository
 features. Linux compilation of the SDK requires OpenSSL 3 development files and pkg-config.
@@ -54,7 +56,8 @@ Run from the intended project directory (or use `cargo run --manifest-path /path
 Copilot CLI using its supported login flow. GitHub repository access does not establish
 Copilot entitlement. Prompts can consume Copilot usage.
 
-All requested tool permissions are denied in this feasibility slice. This is not OS
+The CLI feasibility probe denies all tool requests; the live Mac UI requires an explicit
+allow-once/reject decision for SDK permission requests. This is not OS
 sandboxing. Run probes in a disposable workspace without secrets. Session storage belongs
 to the SDK/runtime; Rivet only prints session references and does not journal credentials.
 
@@ -68,7 +71,7 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-External dependencies are confined to two boundaries: the official SDK and Tokio in
+External dependencies are confined to two boundaries: the official SDK, Tokio, and its async-trait integration in
 `rivet-copilot`, and macOS-only AppKit/Foundation bindings in `rivet-macos`.
 Other crates depend on first-party workspace code.
 The lockfile pins transitive dependencies. CI checks macOS, Windows, and headless Linux;

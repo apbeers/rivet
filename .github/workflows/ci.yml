@@ -44,3 +44,7 @@ jobs:
             rivet-ui-smoke.log
             rivet-ui-smoke.png
           if-no-files-found: warn
+
+      - name: Live workspace native controls (test backend)
+        if: runner.os == 'macOS'
+        run: python -c "import subprocess; r = subprocess.run(['target/debug/rivet', 'ui', '--live-smoke'], capture_output=True, text=True, timeout=60); print(r.stdout); print(r.stderr); assert r.returncode == 0 and 'RIVET_LIVE_UI_SMOKE_PASS' in r.stdout"

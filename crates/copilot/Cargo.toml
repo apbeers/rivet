@@ -8,3 +8,6 @@ license.workspace = true
 [dependencies]
 github-copilot-sdk = "=1.0.32-preview.1"
 tokio = { version = "1", features = ["rt", "time", "macros"] }
+
+rivet-core = { path = "../core" }
+async-trait = "0.1"

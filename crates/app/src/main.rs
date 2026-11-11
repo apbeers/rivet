@@ -59,7 +59,11 @@ fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     #[cfg(target_os = "macos")]
     if args.is_empty() {
-        return rivet_macos::run(false);
+        return launch_ui(false);
+    }
+    #[cfg(target_os = "macos")]
+    if args == ["ui", "--live-smoke"] {
+        return rivet_macos::run_live_smoke();
     }
     if args == ["bench-ui"] {
         print!("{}", rivet_prototype::benchmark());
@@ -67,7 +71,7 @@ fn run() -> Result<(), String> {
     }
     if args == ["ui"] || args == ["ui", "--smoke"] {
         #[cfg(target_os = "macos")]
-        return rivet_macos::run(args.len() == 2);
+        return launch_ui(args.len() == 2);
         #[cfg(not(target_os = "macos"))]
         return Err("The Stage 2 native UI is macOS-only. Windows UI follows later; CLI probes and bench-ui work here.".into());
     }
@@ -149,4 +153,16 @@ mod tests {
         assert_eq!(o.resume.as_deref(), Some("abc"));
         assert_eq!(o.cancel_after, Some(Duration::from_millis(100)));
     }
+}
+
+#[cfg(target_os = "macos")]
+fn launch_ui(smoke: bool) -> Result<(), String> {
+    let backend = if smoke {
+        None
+    } else {
+        Some(Box::new(rivet_copilot::AgentHost::spawn(
+            rivet_core::journal::user_data_dir().map_err(|e| e.to_string())?,
+        )?) as Box<dyn rivet_core::AgentBackend>)
+    };
+    rivet_macos::run(smoke, backend)
 }
