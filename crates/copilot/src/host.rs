@@ -84,6 +84,13 @@ pub struct AgentHost {
 }
 impl AgentHost {
     pub fn spawn(data_dir: PathBuf) -> Result<Self, String> {
+        Self::spawn_with_concurrency(data_dir, false)
+    }
+    /// Only the task coordinator uses this host, after allocating distinct Git worktrees.
+    pub fn spawn_for_isolated_tasks(data_dir: PathBuf) -> Result<Self, String> {
+        Self::spawn_with_concurrency(data_dir, true)
+    }
+    fn spawn_with_concurrency(data_dir: PathBuf, isolated_tasks: bool) -> Result<Self, String> {
         let (commands, rx) = mpsc::sync_channel(32);
         let (tx, events) = async_channel::channel(256);
         let stop = Arc::new(AtomicBool::new(false));
@@ -102,7 +109,7 @@ impl AgentHost {
                         return;
                     }
                 };
-                runtime.block_on(serve(rx, tx, worker_stop, data_dir));
+                runtime.block_on(serve(rx, tx, worker_stop, data_dir, isolated_tasks));
             })
             .map_err(|e| e.to_string())?;
         Ok(Self {
@@ -154,6 +161,7 @@ async fn serve(
     events: async_channel::Sender<AgentEvent>,
     stop: Arc<AtomicBool>,
     dir: PathBuf,
+    isolated_tasks: bool,
 ) {
     let (mut journal, records) = match Journal::open(&dir.join("sessions.rvj")) {
         Ok(j) => j,
@@ -380,8 +388,12 @@ async fn serve(
                     error(&events, key, "Prompt empty or exceeds 256 KiB").await;
                     continue;
                 }
-                if turns.get(&key).is_some_and(|t| !t.is_finished()) {
-                    error(&events, key, "A turn is already running").await;
+                if turn_conflicts(
+                    turns.iter().map(|(&id, t)| (id, t.is_finished())),
+                    key,
+                    isolated_tasks,
+                ) {
+                    error(&events,key,"A conflicting turn is already running. Use Tasks with isolated worktrees for parallel work.").await;
                     continue;
                 }
                 let Some(session) = sessions.get(&key).cloned() else {
@@ -468,9 +480,26 @@ impl rivet_core::AgentBackend for AgentHost {
     }
 }
 
+fn turn_conflicts(
+    active: impl Iterator<Item = (u64, bool)>,
+    key: u64,
+    isolated_tasks: bool,
+) -> bool {
+    active
+        .into_iter()
+        .any(|(id, finished)| !finished && (id == key || !isolated_tasks))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn concurrent_turns_require_the_isolated_task_host() {
+        assert!(turn_conflicts([(1, false)].into_iter(), 2, false));
+        assert!(turn_conflicts([(1, false)].into_iter(), 1, true));
+        assert!(!turn_conflicts([(1, false)].into_iter(), 2, true));
+        assert!(!turn_conflicts([(1, true)].into_iter(), 2, false));
+    }
     fn request() -> PermissionRequestData {
         PermissionRequestData {
             kind: None,

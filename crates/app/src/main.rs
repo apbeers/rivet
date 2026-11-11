@@ -134,7 +134,11 @@ fn launch_ui(smoke: bool) -> Result<(), String> {
     } else {
         Some(rivet_core::task_service::Host::spawn(
             rivet_core::journal::user_data_dir().map_err(|e| e.to_string())?,
-            |path| Ok(Box::new(rivet_copilot::AgentHost::spawn(path)?)),
+            |path| {
+                Ok(Box::new(
+                    rivet_copilot::AgentHost::spawn_for_isolated_tasks(path)?,
+                ))
+            },
         )?)
     };
     rivet_macos::run(smoke, backend, tasks)

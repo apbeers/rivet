@@ -3,7 +3,9 @@
 The native Tasks pane accepts an objective, dependency IDs, and an executable validation
 command as a JSON array. Add tasks, then Run ready tasks. The coordinator persists every
 transition before acting, schedules up to three SDK sessions, and creates a detached Git
-worktree per writing attempt. Agent behavior remains in the official SDK; the coordinator
+worktree per writing attempt. Interactive conversation turns are serialized in their
+SDK host; parallel turns are enabled only for the task coordinator using these isolated
+worktrees. Switching among persistent interactive sessions remains available during work. Agent behavior remains in the official SDK; the coordinator
 handles dependency state, isolation, validation, and approvals.
 
 A finished agent turn enters validation, not Completed. Passing validation waits for human
