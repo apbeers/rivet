@@ -96,7 +96,6 @@ define_class!(
     struct Workspace;
     impl Workspace {
         #[unsafe(method(isFlipped))] fn flipped(&self)->bool{true}
-        #[unsafe(method(isOpaque))] fn opaque(&self)->bool{true}
         #[unsafe(method(drawRect:))] fn draw_background(&self,dirty:NSRect){NSColor::windowBackgroundColor().setFill();NSRectFill(dirty);}
         #[unsafe(method(resizeSubviewsWithOldSize:))] fn resized(&self,_old:NSSize){self.layout_controls();}
         #[unsafe(method(newSession:))] fn new_session(&self,_sender:&NSButton){
@@ -244,6 +243,19 @@ impl Workspace {
                 dispatch(&c.sessions);
             }
             11 => {
+                let views = self.ivars().views.borrow();
+                let view = &views[&1];
+                assert!(
+                    view.string().to_string().contains("Test streamed response"),
+                    "Native conversation lost its text during session navigation"
+                );
+                eprintln!(
+                    "conversation frame={:?} visible={:?} scroll_y={}",
+                    view.frame(),
+                    view.visibleRect(),
+                    self.controls().scroll.contentView().bounds().origin.y
+                );
+                drop(views);
                 self.smoke_snapshot("rivet-live-agents.png");
                 assert_eq!(c.draft.stringValue().to_string(), "Retained draft 🦀");
                 assert!(
@@ -459,6 +471,10 @@ impl Workspace {
         }
     }
     fn smoke_snapshot(&self, path: &str) {
+        for view in self.ivars().views.borrow().values() {
+            view.setNeedsDisplay(true);
+        }
+        self.displayIfNeeded();
         let image = self
             .bitmapImageRepForCachingDisplayInRect(self.bounds())
             .expect("native smoke bitmap");
@@ -478,7 +494,14 @@ impl Workspace {
         );
         for (name, samples) in [
             ("live_session_selection_cpu", &self.ivars().switching),
-            ("live_poll_cpu", &self.ivars().polling),
+            (
+                if self.ivars().smoke_root.borrow().is_some() {
+                    "live_poll_including_fixture_actions_cpu"
+                } else {
+                    "live_poll_cpu"
+                },
+                &self.ivars().polling,
+            ),
             ("live_agent_event_apply_cpu", &self.ivars().event_apply),
         ] {
             if let Some(p) = samples.borrow().percentiles() {
@@ -1078,6 +1101,7 @@ impl Workspace {
         let view = views.entry(key).or_insert_with(|| self.text_view());
         c.scroll.setDocumentView(Some(view));
         view.scrollPoint(NSPoint::new(0.0, s.scroll_y));
+        view.setNeedsDisplay(true);
         self.ivars()
             .switching
             .borrow_mut()
