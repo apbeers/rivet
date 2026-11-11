@@ -22,6 +22,7 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-rust-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: ${{ runner.os }}-rust-
       - name: Install pinned toolchain
         run: rustup show
       - name: Format
@@ -82,3 +83,41 @@ jobs:
         with:
           name: rivet-macos-development
           path: dist/Rivet-macOS-development.zip
+      - name: Prepare native Windows browser loader
+        if: runner.os == 'Windows'
+        run: python tools/prepare_webview2.py target/debug
+      - name: Ensure Windows CI browser runtime
+        if: runner.os == 'Windows'
+        run: python tools/ensure_windows_webview2.py
+      - name: Native Windows workspace smoke (test agent transport)
+        if: runner.os == 'Windows'
+        run: python tools/run_windows_smoke.py
+      - name: Upload native Windows evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-workspace
+          path: |
+            rivet-windows-smoke.log
+            rivet-windows-*.bmp
+          if-no-files-found: warn
+      - name: Assemble per-user Windows package
+        if: runner.os == 'Windows'
+        run: ./tools/package_windows.ps1
+      - name: Per-user Windows install, update, launch, uninstall
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./tools/install_windows.ps1 -Source dist/windows
+          ./tools/install_windows.ps1 -Source dist/windows
+          $env:RIVET_WINDOWS_BINARY = Join-Path $env:LOCALAPPDATA 'Programs/Rivet/Rivet.exe'
+          python tools/run_windows_smoke.py
+          if ($LASTEXITCODE -ne 0) { throw 'Installed app smoke failed' }
+          ./tools/uninstall_windows.ps1
+          if (Test-Path $env:RIVET_WINDOWS_BINARY) { throw 'Uninstall left executable behind' }
+      - name: Upload Windows development package
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rivet-windows-x64-development
+          path: dist/Rivet-Windows-x64-development.zip

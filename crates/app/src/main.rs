@@ -1,10 +1,11 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 use rivet_copilot::{Event, ProbeOptions};
 use std::{
     io::{self, Write},
     time::Duration,
 };
 
-const HELP: &str = "Rivet — Native agent workspace prototype\n\nUsage:\n  rivet ui [--smoke] (macOS only)\n  rivet bench-ui\n  rivet doctor\n  rivet auth\n  rivet chat PROMPT [--resume SESSION] [--cancel-after-ms N] [--timeout-secs N]\n  rivet resume SESSION\n\nRun from the intended workspace. All tool permission requests are denied.\nPrompts may incur Copilot usage. No credentials are printed or stored by Rivet.";
+const HELP: &str = "Rivet — Native agent workspace prototype\n\nUsage:\n  rivet ui [--smoke] (macOS / Windows)\n  rivet bench-ui\n  rivet doctor\n  rivet auth\n  rivet chat PROMPT [--resume SESSION] [--cancel-after-ms N] [--timeout-secs N]\n  rivet resume SESSION\n\nRun from the intended workspace. All tool permission requests are denied.\nPrompts may incur Copilot usage. No credentials are printed or stored by Rivet.";
 
 fn parse(args: &[String]) -> Result<Option<ProbeOptions>, String> {
     let Some(command) = args.first().map(String::as_str) else {
@@ -57,6 +58,20 @@ fn number(value: &str) -> Result<u64, String> {
 }
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    #[cfg(windows)]
+    {
+        if args.is_empty() || args == ["ui"] {
+            return launch_windows();
+        }
+        if args == ["ui", "--smoke"] || args == ["ui", "--live-smoke"] {
+            return rivet_windows::run_smoke();
+        }
+        rivet_windows::attach_parent_console();
+        if args == ["webview-version"] {
+            println!("{}", rivet_windows::browser_runtime_version()?);
+            return Ok(());
+        }
+    }
     #[cfg(target_os = "macos")]
     if args.is_empty() {
         return launch_ui(false);
@@ -72,8 +87,8 @@ fn run() -> Result<(), String> {
     if args == ["ui"] || args == ["ui", "--smoke"] {
         #[cfg(target_os = "macos")]
         return launch_ui(args.len() == 2);
-        #[cfg(not(target_os = "macos"))]
-        return Err("The Stage 2 native UI is macOS-only. Windows UI follows later; CLI probes and bench-ui work here.".into());
+        #[cfg(not(any(target_os = "macos",windows)))]
+        return Err("The native UI supports macOS and Windows. Linux provides CLI probes and headless checks.".into());
     }
     if args == ["doctor"] {
         println!(
@@ -142,6 +157,18 @@ fn launch_ui(smoke: bool) -> Result<(), String> {
         )?)
     };
     rivet_macos::run(smoke, backend, tasks)
+}
+
+#[cfg(windows)]
+fn launch_windows() -> Result<(), String> {
+    let data = rivet_core::journal::user_data_dir().map_err(|e| e.to_string())?;
+    let backend = Box::new(rivet_copilot::AgentHost::spawn(data.clone())?);
+    let tasks = rivet_core::task_service::Host::spawn(data, |path| {
+        Ok(Box::new(
+            rivet_copilot::AgentHost::spawn_for_isolated_tasks(path)?,
+        ))
+    })?;
+    rivet_windows::run(backend, Some(tasks))
 }
 
 #[cfg(test)]

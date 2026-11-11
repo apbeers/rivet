@@ -148,6 +148,21 @@ pub struct FileWorker {
 }
 impl FileWorker {
     pub fn spawn() -> io::Result<Self> {
+        Self::spawn_with_save(save_checked)
+    }
+    pub fn spawn_with_save(
+        save: impl Fn(&Path, &Path, &str, &crate::editor::Snapshot) -> io::Result<PathBuf>
+        + Send
+        + 'static,
+    ) -> io::Result<Self> {
+        Self::spawn_with_save_and_normalization(save, false)
+    }
+    pub fn spawn_with_save_and_normalization(
+        save: impl Fn(&Path, &Path, &str, &crate::editor::Snapshot) -> io::Result<PathBuf>
+        + Send
+        + 'static,
+        normalize: bool,
+    ) -> io::Result<Self> {
         let (tx, rx) = mpsc::sync_channel(16);
         let (out, events) = mpsc::sync_channel(16);
         let stop = Arc::new(AtomicBool::new(false));
@@ -163,16 +178,23 @@ impl FileWorker {
                         Err(_) => break,
                     };
                     let result = match c {
-                        FileCommand::Diff { before, snapshot } => Ok(FileEvent::Diff(
-                            crate::diff::compare(&before, &snapshot.text()),
-                        )),
+                        FileCommand::Diff { before, snapshot } => {
+                            Ok(FileEvent::Diff(crate::diff::compare(
+                                &if normalize {
+                                    normalize_lines(&before)
+                                } else {
+                                    before.to_string()
+                                },
+                                &snapshot.text(),
+                            )))
+                        }
                         FileCommand::Save {
                             root,
                             path,
                             expected,
                             snapshot,
                             revision,
-                        } => Ok(match save_checked(&root, &path, &expected, &snapshot) {
+                        } => Ok(match save(&root, &path, &expected, &snapshot) {
                             Ok(_) => FileEvent::Saved {
                                 path,
                                 text: Arc::from(snapshot.text()),
@@ -201,7 +223,11 @@ impl FileWorker {
                             .read(&root, &path)
                             .map(|(path, text)| FileEvent::Loaded {
                                 path,
-                                buffer: crate::editor::Buffer::new(text.clone()),
+                                buffer: crate::editor::Buffer::new(if normalize {
+                                    Arc::from(normalize_lines(&text))
+                                } else {
+                                    text.clone()
+                                }),
                                 text,
                                 cursor: Some((line, character)),
                             }),
@@ -210,7 +236,11 @@ impl FileWorker {
                                 .read(&root, &path)
                                 .map(|(path, text)| FileEvent::Loaded {
                                     path,
-                                    buffer: crate::editor::Buffer::new(text.clone()),
+                                    buffer: crate::editor::Buffer::new(if normalize {
+                                        Arc::from(normalize_lines(&text))
+                                    } else {
+                                        text.clone()
+                                    }),
                                     cursor: None,
                                     text,
                                 })
@@ -260,67 +290,124 @@ fn save_checked(
     expected: &str,
     snapshot: &crate::editor::Snapshot,
 ) -> io::Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        let _ = (root, path, expected, snapshot);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Native Windows replacement backend required",
+        ))
+    }
     #[cfg(not(windows))]
+    save_with_replace(root, path, expected, snapshot, |temp, path| {
+        fs::rename(temp, path)?;
+        fs::File::open(path.parent().unwrap())?.sync_all()
+    })
+}
+/// Worker-only shared validation and staging; native backends own atomic replacement.
+pub fn save_with_replace(
+    root: &Path,
+    path: &Path,
+    expected: &str,
+    snapshot: &crate::editor::Snapshot,
+    replace: impl Fn(&Path, &Path) -> io::Result<()>,
+) -> io::Result<PathBuf> {
     use std::io::Write;
-    let _ = snapshot;
     let path = scoped(root, path)?;
-    let read_current = || -> io::Result<Vec<u8>> {
-        let mut data = Vec::new();
+    let read = || -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
         fs::File::open(&path)?
             .take(FILE_LIMIT as u64 + 1)
-            .read_to_end(&mut data)?;
-        if data.len() > FILE_LIMIT {
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > FILE_LIMIT {
             return Err(io::Error::other("External file exceeds save budget"));
         }
-        Ok(data)
+        Ok(bytes)
     };
-    let current = read_current()?;
-    if current != expected.as_bytes() {
+    let original = read()?;
+    if original != expected.as_bytes() {
         return Err(io::Error::other(
             "File changed outside Rivet; reload or reconcile before saving",
         ));
     }
-    #[cfg(windows)]
-    return Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "Windows atomic replacement backend is not implemented",
-    ));
-    #[cfg(not(windows))]
-    {
-        use std::fs::OpenOptions;
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let temp = path.with_file_name(format!(".rivet-save-{}-{nonce}", std::process::id()));
-        let result = (|| {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)?;
-            file.set_permissions(fs::metadata(&path)?.permissions())?;
-            snapshot.write_to(&mut file)?;
-            file.flush()?;
-            file.sync_all()?;
-            if read_current()? != current {
-                return Err(io::Error::other(
-                    "File changed during save; original preserved",
-                ));
-            }
-            fs::rename(&temp, &path)?;
-            fs::File::open(path.parent().unwrap())?.sync_all()?;
-            Ok(path.clone())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(temp);
-        }
-        result
+    let permissions = fs::metadata(&path)?.permissions();
+    if permissions.readonly() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "File is read-only",
+        ));
     }
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temporary = path.with_file_name(format!(".rivet-save-{}-{nonce}", std::process::id()));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.set_permissions(permissions)?;
+        snapshot.write_to(&mut file)?;
+        file.flush()?;
+        file.sync_all()?;
+        drop(file);
+        if read()? != original {
+            return Err(io::Error::other(
+                "File changed during save; original preserved",
+            ));
+        }
+        replace(&temporary, &path)?;
+        Ok(path.clone())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn normalize_lines(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn normalized_editor_buffers_keep_original_disk_text() {
+        let root = std::env::temp_dir().join(format!("rivet-line-endings-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("source.rs");
+        fs::write(&path, "let crab = \"🦀\";\r\n").unwrap();
+        let worker = FileWorker::spawn_with_save_and_normalization(save_checked, true).unwrap();
+        worker
+            .submit(FileCommand::Read {
+                root: root.clone(),
+                path,
+            })
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(event) = worker.try_event() {
+                let FileEvent::Loaded { text, buffer, .. } = event else {
+                    panic!("Unexpected file result");
+                };
+                assert!(text.contains("\r\n"));
+                assert_eq!(buffer.snapshot().text(), "let crab = \"🦀\";\n");
+                assert_eq!(
+                    buffer
+                        .position(buffer.byte_to_utf16(buffer.len()).unwrap())
+                        .unwrap(),
+                    (1, 0)
+                );
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        drop(worker);
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     #[cfg(not(windows))]
     fn save_worker_reports_the_exact_document_and_remains_usable() {

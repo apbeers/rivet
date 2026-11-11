@@ -109,6 +109,11 @@ pub fn run(spec: &Spec, cancel: &AtomicBool) -> io::Result<Outcome> {
                 }
             }
         }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
         let mut child = Child(command.spawn()?);
         let start = Instant::now();
         let (mut timed_out, mut cancelled, mut truncated) = (false, false, false);

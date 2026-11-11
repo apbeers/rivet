@@ -2,8 +2,8 @@
 
 A Rust-native workspace for AI agents, built for responsiveness and developer control.
 
-Rivet will use native macOS and Windows interfaces over a shared Rust core. macOS comes
-first; a future Linux frontend remains possible. The main UI will not be a web application.
+Rivet will use native macOS and Windows interfaces over a shared Rust core. macOS was the first frontend; Windows now has a native Win32 backend.
+A future Linux frontend remains possible. The main UI will not be a web application.
 
 ## Installation requirement
 
@@ -40,8 +40,10 @@ The earlier mock performance prototype remains available through `ui --smoke`.
 The Tools pane adds background commands, Git inspection, LSP requests, and constrained
 native PTY sessions ([Stage 6](docs/stage-6.md)). Tasks adds durable dependency scheduling,
 isolated worktrees, SDK sessions, validation and reviewed integration ([Stage 7](docs/stage-7.md)).
-These remain development features with explicit acceptance gaps. Windows and Linux
-currently provide CLI probes and portable tests.
+Windows now includes native sessions, documents/review, tools, ConPTY terminals, task
+supervision and WebView2 browser tabs. Run `rivet.exe` or `rivet.exe ui`; see
+[Windows implementation, packaging and limits](docs/windows.md). These remain development
+features with explicit acceptance gaps. Linux provides CLI probes and portable tests.
 
 See [Stage 3 implementation and acceptance gates](docs/stage-3.md) and
 [Stage 2 performance evidence](docs/stage-2.md). Real model access remains an
@@ -82,7 +84,8 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 External dependencies are confined to two boundaries: the official SDK, Tokio, and its async-trait integration in
-`rivet-copilot`, and macOS-only AppKit/Foundation bindings in `rivet-macos`.
+`rivet-copilot`, and macOS-only AppKit/Foundation bindings in `rivet-macos`. Windows uses handwritten OS
+bindings and first-party Rust crates.
 Other crates depend on first-party workspace code.
 The lockfile pins transitive dependencies. CI checks macOS, Windows, and headless Linux;
 Linux CI does not imply Linux UI support.

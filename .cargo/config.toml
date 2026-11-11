@@ -1,0 +1,3 @@
+[target.x86_64-pc-windows-msvc]
+# A per-user app must not require an elevated VC++ runtime installer.
+rustflags = ["-C", "target-feature=+crt-static"]

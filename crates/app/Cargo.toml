@@ -13,3 +13,6 @@ rivet-prototype = { path = "../prototype" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 rivet-macos = { path = "../macos" }
+
+[target.'cfg(windows)'.dependencies]
+rivet-windows = { path = "../windows" }

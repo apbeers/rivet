@@ -30,6 +30,14 @@ pub fn request(id: u32, method: &str, params: Value) -> Value {
     v
 }
 pub fn file_uri(path: &Path) -> Result<String, String> {
+    #[cfg(windows)]
+    let path = {
+        let text = path.to_str().ok_or("LSP requires UTF-8 paths")?;
+        if text.starts_with(r"\\?\UNC\") || text.starts_with(r"\\") && !text.starts_with(r"\\?\") {
+            return Err("LSP UNC paths are not supported in this version".into());
+        }
+        Path::new(text.strip_prefix(r"\\?\").unwrap_or(text))
+    };
     let path = path
         .to_str()
         .ok_or("LSP requires UTF-8 paths")?
@@ -95,7 +103,13 @@ impl Connection {
                 Err(actual) => count = actual,
             }
         }
-        let child = Command::new(program)
+        let mut command = Command::new(program);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let child = command
             .args(args)
             .current_dir(root)
             .stdin(Stdio::piped())
@@ -333,6 +347,15 @@ pub fn did_open(path: &Path, text: String) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(windows)]
+    fn verbatim_windows_paths_have_standard_file_uris() {
+        assert_eq!(
+            file_uri(Path::new(r"\\?\C:\work\source.rs")).unwrap(),
+            "file:///C:/work/source.rs"
+        );
+        assert!(file_uri(Path::new(r"\\server\share\source.rs")).is_err());
+    }
     #[test]
     fn real_stdio_transport_and_shutdown() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
