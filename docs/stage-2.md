@@ -77,7 +77,8 @@ python3 tools/run_macos_smoke.py
 
 The smoke process opens the window, exercises actual native button actions, checks
 Unicode draft/scroll restoration and cached settings, then cycles through 20 sessions
-and scrolls across the synthetic history while mock updates continue. It requires
+and scrolls across the synthetic history while mock updates continue, followed by
+50 cached settings open/close cycles. It requires
 real drawing callbacks, checks viewport-bounded row counts, saves a native PNG,
 and exits automatically. The Python wrapper enforces a 90-second process timeout,
 requires sufficient native samples, and records host details, process CPU time,
@@ -92,7 +93,7 @@ Measured distributions (bounded rolling window of 4096 samples):
 - Frontend entry to the first conversation draw callback (excludes OS process launch).
 
 CPU regression budgets are p99 <16ms for switching and <8ms for drawing, on the CI
-runner. Passing these does not prove full interaction latency or 60/120Hz display
+runner (also <16ms for cached settings callbacks). Passing these does not prove full interaction latency or 60/120Hz display
 performance. Callback intervals are not presented frame times. Reference-hardware
 interactive measurements, display synchronization, and long-session profiling remain
 acceptance work. No unsupported performance target is claimed.

@@ -227,8 +227,11 @@ define_class!(
                 let state = iv.shared.state.borrow();
                 let y = state.active().records.len() as f64 * ROW_HEIGHT;
                 let viewport = c.document.visibleRect();
-                if viewport.origin.y + viewport.size.height >= y {
+                if !state.active().settings_open && viewport.origin.y + viewport.size.height >= y {
                     c.document.setNeedsDisplayInRect(rect(0.0, y, c.document.bounds().size.width, ROW_HEIGHT));
+                } else {
+                    // Hidden/offscreen time is not event presentation latency.
+                    iv.shared.pending.set(None);
                 }
             }
             let ticks = iv.ticks.get() + 1; iv.ticks.set(ticks);
@@ -507,7 +510,15 @@ impl Shell {
                 ));
             }
             220 => click(&c.jump),
-            240 => {
+            240..=339 => {
+                if tick.is_multiple_of(2) {
+                    click(&c.settings_tab);
+                } else {
+                    click(&c.conversation_tab);
+                }
+            }
+            340 => click(&c.jump),
+            360 => {
                 assert!(self.ivars().shared.state.borrow().active().updates > 0);
                 assert!(self.ivars().shared.metrics.borrow().max_rows_drawn < 30);
                 assert!(

@@ -29,7 +29,7 @@ if result.returncode != 0 or "RIVET_UI_SMOKE_PASS" not in result.stdout:
 if not Path("rivet-ui-smoke.png").is_file():
     raise SystemExit("Native smoke did not produce a screenshot")
 # CPU callback regression budgets, NOT proof of displayed frame latency/refresh rate.
-for metric, budget_ns in [("session_switch_cpu", 16_000_000), ("draw_cpu", 8_000_000)]:
+for metric, budget_ns in [("session_switch_cpu", 16_000_000), ("settings_cpu", 16_000_000), ("draw_cpu", 8_000_000)]:
     match = re.search(rf"^{metric}: n=(\d+) p50=\d+ p95=\d+ p99=(\d+)$", result.stdout, re.M)
     if not match or int(match[1]) < 20:
         raise SystemExit(f"Insufficient native samples for {metric}")
