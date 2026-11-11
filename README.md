@@ -27,9 +27,11 @@ verification are future release work; they are not implemented by the current pr
 
 ## Current stage
 
-Stage 3 adds the native **macOS Copilot workspace**: real session create/resume,
+Stages 3–4 add the native **macOS Copilot workspace**: real session create/resume,
 chat streaming, cancellation, model choices, instructions, permission prompts, and
 saved session references. Run `cargo run -p rivet -- ui` (or no arguments on macOS).
+Browser and Documents views add retained WKWebView tabs and workspace file browsing
+with bounded background loading/caching. See [Stage 4](docs/stage-4.md).
 The earlier mock performance prototype remains available through `ui --smoke`.
 Windows and Linux currently provide CLI probes and portable tests.
 

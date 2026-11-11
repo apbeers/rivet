@@ -11,7 +11,7 @@ class PolicyTests(unittest.TestCase):
         }]}
 
     def test_adapter_exceptions(self):
-        for dep in ["github-copilot-sdk", "tokio"]:
+        for dep in ["github-copilot-sdk", "tokio", "async-trait"]:
             self.assertEqual(check(self.metadata("rivet-copilot", dep)), [])
 
     def test_other_crates_cannot_add_external_dependencies(self):

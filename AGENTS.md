@@ -9,7 +9,7 @@ Read README.md and docs/stage-1.md before changes.
   administrator rights; see README.md. Keep required runtimes and application data user-writable.
 - Use native platform UI and a shared Rust core. Custom Rust surfaces may serve demanding views.
 - External dependencies: SDK, Tokio, and async-trait only in rivet-copilot; objc2, objc2-foundation,
-  and objc2-app-kit only in rivet-macos under macOS conditional dependencies.
+  objc2-app-kit, and objc2-web-kit only in rivet-macos under macOS conditional dependencies.
 - Read docs/stage-2.md for prototype limitations and verification gates.
 - Never expose SDK or Tokio types through the adapter's public boundary.
 - No credentials in logs, source, snapshots, or Git. Tool permissions fail closed.

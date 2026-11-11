@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+pub mod documents;
 pub mod journal;
 use std::{collections::BTreeMap, path::PathBuf};
 

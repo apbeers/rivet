@@ -10,6 +10,8 @@ rivet-prototype = { path = "../prototype" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSGeometry", "NSObject", "NSString", "NSTimer", "NSRunLoop", "NSAttributedString", "NSDate", "NSNotification", "NSData", "NSAttributedString", "NSRange"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSGeometry", "NSObject", "NSString", "NSTimer", "NSRunLoop", "NSAttributedString", "NSDate", "NSNotification", "NSData", "NSAttributedString", "NSRange", "NSURL", "NSURLRequest"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSAttributedString", "NSButtonCell", "NSApplication", "NSButton", "NSColor", "NSControl", "NSFont", "NSGraphics", "NSMenu", "NSMenuItem", "NSResponder", "NSScrollView", "NSClipView", "NSScroller", "NSStringDrawing", "NSTextField", "NSText", "NSView", "NSWindow", "NSRunningApplication", "NSBitmapImageRep", "NSImageRep", "NSCell", "NSEvent", "NSPopUpButton", "NSTextView", "NSTextStorage", "NSTextContainer"] }
 rivet-core = { path = "../core" }
+
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKWebView", "WKWebViewConfiguration", "WKNavigation", "objc2-app-kit", "objc2-core-foundation"] }

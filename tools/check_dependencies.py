@@ -16,7 +16,7 @@ def check(metadata):
             if package["name"] == "rivet-copilot" and dep["name"] in {"github-copilot-sdk", "tokio", "async-trait"}:
                 continue
             if (package["name"] == "rivet-macos"
-                    and dep["name"] in {"objc2", "objc2-foundation", "objc2-app-kit"}
+                    and dep["name"] in {"objc2", "objc2-foundation", "objc2-app-kit", "objc2-web-kit"}
                     and dep.get("target") == 'cfg(target_os = "macos")'
                     and dep.get("kind") is None):
                 continue

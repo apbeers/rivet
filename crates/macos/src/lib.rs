@@ -16,3 +16,8 @@ pub fn run(smoke: bool, backend: Option<Box<dyn rivet_core::AgentBackend>>) -> R
 pub fn run_live_smoke() -> Result<(), String> {
     live::run(live::smoke_backend(), true)
 }
+
+#[cfg(target_os = "macos")]
+mod browser;
+#[cfg(target_os = "macos")]
+mod documents;
