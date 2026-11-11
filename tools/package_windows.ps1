@@ -14,14 +14,17 @@ python tools/prepare_webview2.py $Output
 if ($LASTEXITCODE -ne 0) { throw 'WebView2 loader preparation failed' }
 @'
 Rivet Windows x64 development build. Windows 10 1809+ / Windows 11 required.
-Run Rivet.exe, or use Install-Rivet.ps1 for installation under the current user's
-LocalAppData/Programs/Rivet. No administrator rights, service or PATH change.
+Extract the entire ZIP first, then double-click Rivet.exe. No installer is needed.
+Keep the other extracted files beside Rivet.exe. Move the folder anywhere in your account.
+Quit Rivet before replacing that folder with a newer download. Delete it to uninstall.
+No Rust toolchain, administrator rights, service or PATH change is needed.
 WebView2 Evergreen Runtime is required for embedded browsing. If absent, install
 it for the current user from https://developer.microsoft.com/microsoft-edge/webview2/.
 Git and language servers are optional installed development tools.
-Authenticate using the supported Copilot CLI login flow before real model requests.
+Authenticate using copilot login through the supported Copilot CLI before agent use.
 This development build is unsigned; Authenticode/SmartScreen and fresh standard-user
 release acceptance remain open. Terminal emulation is constrained. See the repository
-README and docs/windows.md for limits. No OS filesystem sandbox is claimed.
+https://github.com/apbeers/rivet#download-and-run for setup and limits.
+No OS filesystem sandbox is claimed.
 '@ | Set-Content (Join-Path $Output 'README.txt')
 Compress-Archive -Path "$Output/*" -DestinationPath 'dist/Rivet-Windows-x64-development.zip'

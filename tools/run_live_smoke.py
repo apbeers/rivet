@@ -1,11 +1,13 @@
 """Exercise real AppKit controls with an explicit in-memory SDK fixture."""
+import os
 import pathlib
 import subprocess
 import sys
 
 
 def main():
-    command = [str(pathlib.Path('target/debug/rivet').resolve()), 'ui', '--live-smoke']
+    binary = pathlib.Path(os.environ.get('RIVET_MACOS_BINARY', 'target/debug/rivet')).resolve()
+    command = [str(binary), 'ui', '--live-smoke']
     log = pathlib.Path('rivet-live-smoke.log')
     with log.open('w') as output:
         child = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT, text=True)

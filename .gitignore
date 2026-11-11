@@ -31,6 +31,8 @@ __pycache__/
 /rivet-ui-smoke.png
 
 /dist/
+/downloads/
+/artifacts/
 /rivet-live-smoke.log
 /rivet-live-sample.txt
 

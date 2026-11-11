@@ -1,6 +1,7 @@
 name: Rivet checks
 on:
   push:
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 permissions:
@@ -77,6 +78,13 @@ jobs:
           bash tools/install_macos.sh dist/Rivet.app
           bash tools/install_macos.sh dist/Rivet.app
           codesign --verify --deep --strict "$HOME/Applications/Rivet.app"
+          RIVET_MACOS_BINARY="$HOME/Applications/Rivet.app/Contents/MacOS/rivet" python3 tools/run_live_smoke.py
+      - name: Launch extracted Mac download
+        if: runner.os == 'macOS'
+        run: |
+          ditto -x -k dist/Rivet-macOS-development.zip dist/portable-macos
+          codesign --verify --deep --strict dist/portable-macos/Rivet.app
+          RIVET_MACOS_BINARY="$PWD/dist/portable-macos/Rivet.app/Contents/MacOS/rivet" python3 tools/run_live_smoke.py
       - name: Upload development bundle
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
@@ -120,9 +128,67 @@ jobs:
           if (Test-Path $env:RIVET_WINDOWS_BINARY) { throw 'Uninstall left executable behind' }
           if (-not (Test-Path $extra)) { throw 'Uninstall removed user file' }
           Remove-Item -LiteralPath $extra
+      - name: Launch extracted Windows download
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Expand-Archive dist/Rivet-Windows-x64-development.zip -DestinationPath dist/portable-windows
+          $env:RIVET_WINDOWS_BINARY = (Resolve-Path dist/portable-windows/Rivet.exe).Path
+          python tools/run_windows_smoke.py
+          if ($LASTEXITCODE -ne 0) { throw 'Portable app smoke failed' }
       - name: Upload Windows development package
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: rivet-windows-x64-development
           path: dist/Rivet-Windows-x64-development.zip
+
+  downloads:
+    name: Prepare install downloads
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: rivet-windows-x64-development
+          path: artifacts/windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: rivet-macos-development
+          path: artifacts/macos
+      - name: Validate architectures and prepare checksummed downloads
+        run: python3 tools/publish_preview.py --prepare-only
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rivet-install-downloads
+          path: downloads/*
+          compression-level: 0
+          if-no-files-found: error
+
+  publish-preview:
+    name: Publish preview downloads
+    needs: downloads
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    concurrency:
+      group: rivet-preview-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: rivet-install-downloads
+          path: downloads
+      - name: Publish verified preview assets and source reference
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/publish_preview.py --publish-only
