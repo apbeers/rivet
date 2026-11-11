@@ -20,9 +20,10 @@ use std::{
 
 fn click(button: &NSButton) {
     // SAFETY: only controls constructed with Shell's registered target/actions reach here.
-    unsafe {
-        button.performClick(None);
-    }
+    // NSButton.performClick animates and blocks this timer-driven test. Dispatch
+    // the registered native action instead; OS mouse delivery is a separate gate.
+    let target = button.target();
+    assert!(unsafe { button.sendAction_to(button.action(), target.as_deref()) });
 }
 fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
     NSRect::new(NSPoint::new(x, y), NSSize::new(w.max(0.0), h.max(0.0)))

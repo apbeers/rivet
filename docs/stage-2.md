@@ -75,7 +75,8 @@ cargo build --locked -p rivet
 python3 tools/run_macos_smoke.py
 ```
 
-The smoke process opens the window, exercises actual native button actions, checks
+The smoke process opens the window, dispatches actual native button target/actions (without performClick's blocking
+highlight animation or OS mouse-event delivery), checks
 Unicode draft/scroll restoration and cached settings, then cycles through 20 sessions
 and scrolls across the synthetic history while mock updates continue, followed by
 50 cached settings open/close cycles. It requires
@@ -110,3 +111,26 @@ Native controls retain platform accessibility behavior. The custom conversation
 surface is not yet an accessible per-message document or selectable text editor.
 This remains an explicit limitation, along with no cross-process UI-state persistence,
 no actual Copilot UI integration (Stage 3), and no Windows frontend yet.
+
+
+## Recorded native CI baseline (2026-11-11)
+
+Implementation `5c6daa4`, [run 42960300644](https://github.com/apbeers/rivet/actions/runs/42960300644),
+passed the full macOS/Windows/Linux matrix, including the original animated-button
+smoke driver. Host: macOS 26.7.2 arm64, VirtualMac2,1, 3 CPUs, 7 GiB RAM; debug build.
+
+| Measurement | p50 | p95 | p99 |
+| --- | ---: | ---: | ---: |
+| Session-switch callback | 1.01 ms | 1.74 ms | 3.04 ms |
+| Cached settings callback | 0.96 ms | 1.64 ms | 2.13 ms |
+| Conversation draw callback | 1.84 ms | 3.41 ms | 7.12 ms |
+| Session selection to draw callback | 3.67 ms | 15.62 ms | 20.63 ms |
+| Mock activity arrival to draw callback | 228.81 ms | 437.82 ms | 437.82 ms |
+
+Only 8 rows were drawn per callback at most. Frontend entry to first conversation
+paint was **3.16 seconds**, above the 500ms startup target. The original smoke run
+lasted 46.46 seconds and consumed 4.52 process CPU seconds. Its driver used animated
+`performClick` calls, which block the timer callback and inflate queued update latency.
+These measurements are retained rather than being represented as meeting all targets.
+The revised benchmark uses native target/action dispatch, without that artificial delay.
+Cold startup and reference-hardware presentation latency still require profiling.
