@@ -76,6 +76,8 @@ struct State {
     switching: RefCell<rivet_prototype::Samples>,
     polling: RefCell<rivet_prototype::Samples>,
     event_apply: RefCell<rivet_prototype::Samples>,
+    browser_init: RefCell<rivet_prototype::Samples>,
+    browser_switch: RefCell<rivet_prototype::Samples>,
     cached_paths: RefCell<Vec<PathBuf>>,
     mode: Cell<u8>,
     tools: OnceCell<Retained<super::tools::Tools>>,
@@ -120,9 +122,10 @@ define_class!(
         #[unsafe(method(denyRequest:))] fn deny_request(&self,_sender:&NSButton){self.decide(false);}
         #[unsafe(method(showMode:))] fn show_mode(&self,sender:&NSButton){self.ivars().mode.set(sender.tag() as u8);self.apply_mode();}
         #[unsafe(method(newBrowser:))] fn new_browser(&self,_sender:&NSButton){
-            let frame=self.content_frame();let id=self.ivars().browsers.borrow_mut().create(self,frame,self.mtm());let ids=self.ivars().browsers.borrow().ids();let c=self.controls();c.browser_tabs.removeAllItems();for key in ids{c.browser_tabs.addItemWithTitle(&NSString::from_str(&key.to_string()));}c.browser_tabs.selectItemWithTitle(&NSString::from_str(&id.to_string()));self.ivars().mode.set(1);self.apply_mode();
+            let started=std::time::Instant::now();
+            let frame=self.content_frame();let id=self.ivars().browsers.borrow_mut().create(self,frame,self.mtm());let ids=self.ivars().browsers.borrow().ids();let c=self.controls();c.browser_tabs.removeAllItems();for key in ids{c.browser_tabs.addItemWithTitle(&NSString::from_str(&key.to_string()));}c.browser_tabs.selectItemWithTitle(&NSString::from_str(&id.to_string()));self.ivars().mode.set(1);self.apply_mode();self.ivars().browser_init.borrow_mut().record(started.elapsed());
         }
-        #[unsafe(method(selectBrowser:))] fn select_browser(&self,sender:&NSPopUpButton){if let Some(id)=sender.titleOfSelectedItem().and_then(|s|s.to_string().parse().ok()){self.ivars().browsers.borrow_mut().select(id);self.apply_mode();}}
+        #[unsafe(method(selectBrowser:))] fn select_browser(&self,sender:&NSPopUpButton){let started=std::time::Instant::now();if let Some(id)=sender.titleOfSelectedItem().and_then(|s|s.to_string().parse().ok()){self.ivars().browsers.borrow_mut().select(id);self.apply_mode();self.ivars().browser_switch.borrow_mut().record(started.elapsed());}}
         #[unsafe(method(navigateBrowser:))] fn navigate_browser(&self,_sender:&NSButton){if let Err(e)=self.ivars().browsers.borrow().navigate(&self.controls().address.stringValue().to_string()){self.status(&e);}}
         #[unsafe(method(browserBack:))] fn browser_back(&self,_sender:&NSButton){self.ivars().browsers.borrow().back();}
         #[unsafe(method(browserForward:))] fn browser_forward(&self,_sender:&NSButton){self.ivars().browsers.borrow().forward();}
@@ -176,8 +179,8 @@ define_class!(
             if let Some(tools)=self.ivars().tools.get(){tools.tick();if let Some((path,line,character))=tools.try_navigation(){self.file_job(FileCommand::ReadAt{root:self.root_path(),path,line,character});}}
 
             if let Some(tasks)=self.ivars().tasks.get(){tasks.tick();}
-            self.smoke_step();
             self.ivars().polling.borrow_mut().record(tick_started.elapsed());
+            self.smoke_step();
         }
         #[unsafe(method(shutdownTick:))] fn shutdown_tick(&self,_timer:&NSTimer){self.poll_shutdown();}
     }
@@ -278,6 +281,13 @@ impl Workspace {
                 assert_eq!(browsers.active_view().unwrap() as *const _, ptr);
                 assert!(browsers.navigate("javascript:alert(1)").is_err());
                 browsers.navigate("about:blank").unwrap();
+                drop(browsers);
+                c.browser_tabs
+                    .selectItemWithTitle(&NSString::from_str(&first.to_string()));
+                dispatch(&c.browser_tabs);
+                c.browser_tabs
+                    .selectItemWithTitle(&NSString::from_str(&id.to_string()));
+                dispatch(&c.browser_tabs);
             }
             20 => {
                 let root = std::env::temp_dir().join(format!(
@@ -490,19 +500,26 @@ impl Workspace {
     }
     fn report_metrics(&self) {
         eprintln!(
-            "Live workspace timing: nanoseconds; CPU callbacks, not presented frames or network latency"
+            "Live workspace timing: nanoseconds; elapsed callbacks, not presented frames or network latency"
         );
         for (name, samples) in [
-            ("live_session_selection_cpu", &self.ivars().switching),
             (
-                if self.ivars().smoke_root.borrow().is_some() {
-                    "live_poll_including_fixture_actions_cpu"
-                } else {
-                    "live_poll_cpu"
-                },
-                &self.ivars().polling,
+                "live_session_selection_callback_elapsed",
+                &self.ivars().switching,
             ),
-            ("live_agent_event_apply_cpu", &self.ivars().event_apply),
+            ("live_poll_callback_elapsed", &self.ivars().polling),
+            (
+                "live_agent_event_apply_callback_elapsed",
+                &self.ivars().event_apply,
+            ),
+            (
+                "live_browser_initialization_callback_elapsed",
+                &self.ivars().browser_init,
+            ),
+            (
+                "live_browser_switch_callback_elapsed",
+                &self.ivars().browser_switch,
+            ),
         ] {
             if let Some(p) = samples.borrow().percentiles() {
                 eprintln!(
@@ -740,6 +757,8 @@ impl Workspace {
             switching: RefCell::new(Default::default()),
             polling: RefCell::new(Default::default()),
             event_apply: RefCell::new(Default::default()),
+            browser_init: RefCell::new(Default::default()),
+            browser_switch: RefCell::new(Default::default()),
             cached_paths: RefCell::new(Vec::new()),
             mode: Cell::new(0),
             tools: OnceCell::new(),

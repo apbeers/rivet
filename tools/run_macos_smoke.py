@@ -28,10 +28,18 @@ if result.returncode != 0 or "RIVET_UI_SMOKE_PASS" not in result.stdout:
     raise SystemExit(f"Native smoke failed: exit {result.returncode}")
 if not Path("rivet-ui-smoke.png").is_file():
     raise SystemExit("Native smoke did not produce a screenshot")
-# CPU callback regression budgets, NOT proof of displayed frame latency/refresh rate.
-for metric, budget_ns in [("session_switch_cpu", 16_000_000), ("settings_cpu", 16_000_000), ("draw_cpu", 8_000_000)]:
+# Thread CPU work budgets, NOT proof of elapsed or displayed frame latency/refresh rate.
+# Elapsed p99 remains in the report, including any missed target on a shared runner.
+for metric, budget_ns in [("session_switch_thread_cpu", 16_000_000), ("settings_thread_cpu", 16_000_000), ("draw_thread_cpu", 8_000_000)]:
     match = re.search(rf"^{metric}: n=(\d+) p50=\d+ p95=\d+ p99=(\d+)$", result.stdout, re.M)
     if not match or int(match[1]) < 20:
         raise SystemExit(f"Insufficient native samples for {metric}")
     if int(match[2]) > budget_ns:
         raise SystemExit(f"Native {metric} p99 exceeded {budget_ns}ns callback budget")
+
+for metric, budget_ns in [("session_switch_callback_elapsed", 16_000_000), ("settings_callback_elapsed", 16_000_000), ("draw_callback_elapsed", 8_000_000)]:
+    match = re.search(rf"^{metric}: n=\d+ p50=\d+ p95=\d+ p99=(\d+)$", result.stdout, re.M)
+    if not match:
+        raise SystemExit(f"Missing elapsed measurement: {metric}")
+    if int(match[1]) > budget_ns:
+        print(f"ELAPSED TARGET NOT MET on this runner: {metric} p99={match[1]}ns target={budget_ns}ns; reference-hardware latency acceptance remains open.")

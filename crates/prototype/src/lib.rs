@@ -216,6 +216,9 @@ impl Samples {
 }
 #[derive(Default)]
 pub struct Metrics {
+    pub switching_thread_cpu: Samples,
+    pub settings_thread_cpu: Samples,
+    pub drawing_thread_cpu: Samples,
     pub switching: Samples,
     pub switch_to_draw: Samples,
     pub settings: Samples,
@@ -227,13 +230,16 @@ pub struct Metrics {
 impl Metrics {
     pub fn report(&self) -> String {
         let mut report = String::from(
-            "Timing units: nanoseconds. CPU callbacks are not presentation latency.\n",
+            "Timing units: nanoseconds. Callback elapsed and thread CPU are separate; neither proves presentation latency.\n",
         );
         for (name, samples) in [
-            ("session_switch_cpu", &self.switching),
+            ("session_switch_callback_elapsed", &self.switching),
             ("session_switch_to_draw_callback", &self.switch_to_draw),
-            ("settings_cpu", &self.settings),
-            ("draw_cpu", &self.drawing),
+            ("session_switch_thread_cpu", &self.switching_thread_cpu),
+            ("settings_thread_cpu", &self.settings_thread_cpu),
+            ("draw_thread_cpu", &self.drawing_thread_cpu),
+            ("settings_callback_elapsed", &self.settings),
+            ("draw_callback_elapsed", &self.drawing),
             ("mock_event_to_draw_callback", &self.event_to_draw),
         ] {
             if let Some(p) = samples.percentiles() {

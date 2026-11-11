@@ -58,7 +58,7 @@ define_class!(
         fn opaque(&self) -> bool { true }
         #[unsafe(method(drawRect:))]
         fn draw(&self, dirty: NSRect) {
-            let started = Instant::now();
+            let started = Instant::now();let cpu=super::clock::Span::start();
             let iv = self.ivars();
             if !iv.shared.first_draw.replace(true) {
                 eprintln!("native_frontend_entry_to_first_conversation_draw_us={}", iv.shared.started.elapsed().as_micros());
@@ -105,6 +105,7 @@ define_class!(
             let mut metrics = iv.shared.metrics.borrow_mut();
             metrics.rows_drawn = drawn; metrics.max_rows_drawn = metrics.max_rows_drawn.max(drawn);
             metrics.drawing.record(started.elapsed());
+            if let Some(elapsed)=cpu.elapsed(){metrics.drawing_thread_cpu.record(elapsed);}
         }
     }
 );
@@ -183,7 +184,7 @@ define_class!(
         fn resized(&self, _old: NSSize) { self.layout_controls(); }
         #[unsafe(method(selectSession:))]
         fn select_session(&self, sender: &NSButton) {
-            let start = Instant::now(); let Some(c) = self.ivars().controls.get() else { return; };
+            let start = Instant::now();let cpu=super::clock::Span::start(); let Some(c) = self.ivars().controls.get() else { return; };
             self.save_view();
             self.ivars().shared.pending.set(None);
             self.ivars().shared.state.borrow_mut().select(sender.tag() as usize);
@@ -192,6 +193,7 @@ define_class!(
                 self.ivars().shared.switch_requested.set(Some(start));
             }
             self.ivars().shared.metrics.borrow_mut().switching.record(start.elapsed());
+            if let Some(elapsed)=cpu.elapsed(){self.ivars().shared.metrics.borrow_mut().switching_thread_cpu.record(elapsed);}
             c.document.setNeedsDisplay(true);
         }
         #[unsafe(method(showConversation:))]
@@ -436,6 +438,7 @@ impl Shell {
     }
     fn show_settings(&self, show: bool) {
         let start = Instant::now();
+        let cpu = super::clock::Span::start();
         self.save_view();
         self.ivars()
             .shared
@@ -443,13 +446,21 @@ impl Shell {
             .borrow_mut()
             .active_mut()
             .settings_open = show;
-        self.restore_view();
-        self.ivars()
-            .shared
-            .metrics
-            .borrow_mut()
-            .settings
-            .record(start.elapsed());
+        // Toggle only the affected views. Session labels, models and sidebar selection
+        // are already current and need no update for a cached tab change.
+        let c = self.ivars().controls.get().unwrap();
+        c.settings.setHidden(!show);
+        c.scroll.setHidden(show);
+        c.draft.setHidden(show);
+        c.jump.setHidden(show);
+        if !show {
+            c.document.setNeedsDisplay(true);
+        }
+        let mut metrics = self.ivars().shared.metrics.borrow_mut();
+        metrics.settings.record(start.elapsed());
+        if let Some(elapsed) = cpu.elapsed() {
+            metrics.settings_thread_cpu.record(elapsed);
+        }
     }
     fn start_timer(&self) {
         // SAFETY: tick: is implemented above; timer is retained and invalidated at shutdown.

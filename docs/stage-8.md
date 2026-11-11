@@ -58,3 +58,15 @@ per piece (previous p50 15,594 us). These are one container run, not reference-h
 acceptance. CI records the same benchmark on its three OS runners. Native live workspace
 shutdown also reports bounded p50/p95/p99 CPU samples for session selection, event
 application, and polling; none of these claims presented-frame latency.
+
+## Timing correction
+
+Historical Stage 2 metrics labeled `*_cpu` used `Instant` and therefore measured elapsed
+callback time, including scheduler stalls. One shared-runner execution measured settings
+p99 32.3 ms (p50 0.91 ms), exceeding the 16 ms elapsed target. This failure is retained in
+run 43037141306; no elapsed-latency acceptance is claimed. Cached settings toggles now
+update only their affected views. Current CI gates thread CPU work using Darwin's thread
+CPU clock, and separately records callback elapsed p50/p95/p99 and emits any missed
+elapsed target. Reference-hardware latency and presented-frame acceptance remain open.
+Live polling excludes synthetic test actions; browser construction and cached switching
+have separate elapsed metrics, so initial native WebKit costs remain visible.

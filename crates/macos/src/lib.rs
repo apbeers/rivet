@@ -43,3 +43,6 @@ mod console;
 
 #[cfg(target_os = "macos")]
 mod tasks;
+
+#[cfg(target_os = "macos")]
+mod clock;
